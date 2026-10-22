@@ -2,9 +2,9 @@
 
 Piloto de Presidente Getúlio, SC. Painel React, API FastAPI, worker com fila persistente, comparação lado a lado/sobreposição, administração e rastreabilidade.
 
-O visual usa azul escuro e laranja com símbolo de proteção. O painel apresenta o objetivo do sistema e atalhos para acompanhar níveis, comparar imagens e consultar evidências.
+O painel reúne o nível atual do Rio dos Índios, um cenário histórico didático e as comparações de imagens. A interface usa cores discretas e deixa a origem e a data das informações próximas dos dados.
 
-O painel identifica a estação oficial [DCSC-00043 — SDC-SC Presidente Getúlio](https://monitoramento.defesacivil.sc.gov.br/estacao/DCSC-00043), da bacia SC - Rio Itajaí, e liga às leituras atuais publicadas pela Defesa Civil SC. O código e os metadados são reais; o MVP ainda não possui um serviço autorizado de coleta automática dessa estação. O gráfico do caso de 2023 usa somente cotas simuladas, identificadas como tal. A [cessão da área para instalação da estação na Rua Niterói Atlântico](https://portal.doe.sea.sc.gov.br/repositorio/2024/20241023/Jornal/22381.pdf) foi publicada em outubro de 2024; portanto não atribuímos ao sensor medições do episódio de 2023.
+O nível atual vem das leituras **DCSC-00043 — Rio dos Índios**, reproduzidas pelo [Portal municipal de Proteção e Defesa Civil](https://pdc.presidentegetulio.sc.gov.br/monitoramento). A [página original da estação na Defesa Civil SC](https://monitoramento.defesacivil.sc.gov.br/estacao/DCSC-00043) também está vinculada. A consulta é pública e somente de leitura; o painel atualiza a cada minuto e marca leituras com mais de 30 minutos como antigas. O horário exibido é o de **publicação na base municipal** (`created_at`), pois o campo de horário da estação publicado pelo espelho tem uma divergência de três horas. Essa fonte é **DCSC, não ANA**. Ela ainda não alimenta o gatilho automático de eventos, que exige cota validada e a integração hidrométrica configurada. O gráfico de 2023 usa somente cotas simuladas. A [cessão da área para instalação da estação na Rua Niterói Atlântico](https://portal.doe.sea.sc.gov.br/repositorio/2024/20241023/Jornal/22381.pdf) foi publicada em outubro de 2024; portanto não atribuímos ao sensor medições do episódio de 2023.
 
 ## Apresentação sem acesso ANA
 
@@ -28,7 +28,7 @@ python3 -m venv .venv
 npm --prefix frontend ci
 ```
 
-Configure `.env` a partir de `.env.example`, preenchendo `ADMIN_EMAIL`, `ADMIN_PASSWORD` (mínimo 4 caracteres no MVP local) e `APP_SECRET` (mínimo 32). No ambiente já configurado, preserve o `.env` existente. As credenciais ficam apenas no servidor e o arquivo é ignorado pelo Git. API e worker carregam esse arquivo automaticamente no uso local.
+Configure `.env` a partir de `.env.example`, preenchendo `ADMIN_EMAIL`, `ADMIN_PASSWORD` (mínimo 4 caracteres no MVP local) e `APP_SECRET` (mínimo 32). Para exibir o nível atual, preencha `PDC_SUPABASE_ANON_KEY` com a chave pública anônima da integração do portal municipal; no ambiente desta entrega ela já está no `.env` local. Solicite ao mantenedor do portal uma forma estável de acesso antes de publicar o serviço para a população. Sem essa variável, o painel mostra a indisponibilidade da fonte e mantém o link para o portal. No ambiente já configurado, preserve o `.env` existente. As credenciais ficam apenas no servidor e o arquivo é ignorado pelo Git. API e worker carregam esse arquivo automaticamente no uso local.
 
 ```bash
 .venv/bin/python scripts/run_local.py
@@ -58,7 +58,7 @@ docker compose up --build -d
 
 O `.env` também precisa conter as senhas PostgreSQL/MinIO. Abra **http://localhost:8080**; documentação em `/api/docs`; console MinIO em `http://localhost:9001`. PostgreSQL/PostGIS e MinIO persistem em volumes. Encerre com `docker compose down`, preservando os volumes. Docker não foi exercitado nesta correção.
 
-O worker registra tentativas, aplica espera crescente, retoma leases vencidos e permite reprocessar eventos. As imagens têm checksum e versões. Horários ANA sem fuso são interpretados como America/Sao_Paulo. O acesso ANA e a coleta hidrométrica real não foram validados, pois não há credenciais ANA disponíveis.
+O worker registra tentativas, aplica espera crescente, retoma leases vencidos e permite reprocessar eventos. As imagens têm checksum e versões. Horários ANA sem fuso são interpretados como America/Sao_Paulo. O acesso ANA e o gatilho automático com medições reais não foram validados, pois não há credenciais ANA disponíveis. A leitura DCSC do portal municipal foi consultada com sucesso em 22/10/2026, mas é um espelho público sem contrato de disponibilidade documentado.
 
 ## Validação
 

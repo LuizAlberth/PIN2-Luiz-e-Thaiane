@@ -15,6 +15,7 @@ from .service import active_config, create_config, demo_config, demo_replay, ing
 from .adapters import ANAClient, CDSEClient, ProviderError, parsed_time
 from .storage import get
 from .station_reference import OFFICIAL_STATION
+from .pdc import live_station
 
 @asynccontextmanager
 async def lifespan(app):
@@ -180,6 +181,13 @@ def status(db: Session = Depends(session)):
         'integration_status': integration_status, 'official_station': OFFICIAL_STATION,
         'updated_at': iso(now()),
         'recent_events': [event_json(db, e) for e in events]}
+
+@app.get('/api/stations/dcsc-00043')
+def dcsc_station():
+    try:
+        return live_station()
+    except ProviderError as exc:
+        raise HTTPException(503, str(exc)) from exc
 
 @app.get('/api/events')
 def events(mode: Literal['AO_VIVO','SIMULACAO'] = 'AO_VIVO', page: int = 1, db: Session = Depends(session)):

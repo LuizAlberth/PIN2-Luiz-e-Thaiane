@@ -19,6 +19,7 @@ from app.satellite_demo import load_pair, TRIGGER, BBOX
 from app.adapters import verify_png
 import app.storage as storage
 from app.api import app
+from app.pdc import PDCClient, live_station
 
 @pytest.fixture
 def db(tmp_path, monkeypatch):
@@ -153,6 +154,25 @@ def test_ana_normalization_and_token_reuse(monkeypatch):
     assert [r['quality'] for r in readings]==['VALIDA','SEM_COTA']
     assert readings[0]['level_cm']==305
     assert readings[0]['observed_at'].hour==13  # Brasília UTC-3 in January
+
+def test_public_pdc_station_uses_publication_time_and_keeps_source_separate(monkeypatch):
+    monkeypatch.setenv('PDC_SUPABASE_ANON_KEY', 'public-test-key')
+    published = now().replace(microsecond=0)
+    def handler(request):
+        assert request.url.params['sta_code'] == 'eq.DCSC-00043'
+        assert request.headers['apikey'] == 'public-test-key'
+        return httpx.Response(200, json=[
+            {'sta_code': 'DCSC-00043', 'river_level': 1.66,
+             'created_at': published.isoformat(), 'sta_timestamp': '2026-10-22T19:45:05+00:00'},
+            {'sta_code': 'DCSC-00043', 'river_level': None,
+             'created_at': published.isoformat(), 'sta_timestamp': None},
+        ])
+    result = live_station(PDCClient(transport=httpx.MockTransport(handler)))
+    assert result['status'] == 'ATUALIZADO'
+    assert result['station']['code'] == 'DCSC-00043'
+    assert result['latest']['water_level_cm'] == 166
+    assert result['latest']['observed_at'] == published.isoformat()
+    assert result['provider'] == 'Portal municipal / DCSC'
 
 def test_cdse_candidate_selection_requires_matching_orbit():
     trigger=now()

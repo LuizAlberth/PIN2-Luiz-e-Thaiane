@@ -33,6 +33,8 @@ const cm = (x) =>
   x == null
     ? "—"
     : `${Number(x).toLocaleString("pt-BR", { maximumFractionDigits: 1 })} cm`;
+const meters = (x) =>
+  x == null ? "—" : `${(Number(x) / 100).toLocaleString("pt-BR", { minimumFractionDigits: 2, maximumFractionDigits: 2 })} m`;
 const names = {
   ATUALIZADO: "Atualizado",
   ATRASADO: "Dado atrasado",
@@ -136,36 +138,60 @@ const Notice = ({ demo = false, replay = false }) => (
     <Icon name="info" size={18} />
     <span>
       {demo
-        ? "Demonstração: níveis e gatilho simulados, sem medições da ANA ou da Defesa Civil. Consulte a origem e a data de cada imagem. Diferenças visuais não confirmam uma inundação."
+        ? "Cotas simuladas. Imagens Sentinel-2 reais de antes e depois, fora do pico da enchente."
         : replay
           ? "Esta área reúne replays históricos. Alguns usam leituras e cenas reais; os cenários didáticos são identificados em cada evento."
           : "Comparações visuais são evidências informativas. O sistema não emite alertas oficiais nem delimita a área exata de inundação."}
     </span>
   </div>
 );
-const OfficialStation = ({ station, demo }) =>
-  station && (
-    <section className="official-station" aria-labelledby="official-station-title">
-      <div className="official-station-icon" aria-hidden="true">
-        <Icon name="pin" size={25} />
+function useLiveStation() {
+  const [live, setLive] = useState(null);
+  const [error, setError] = useState("");
+  useEffect(() => {
+    let active = true;
+    const load = () => api("/stations/dcsc-00043")
+      .then((value) => { if (active) { setLive(value); setError(""); } })
+      .catch((e) => { if (active) { setLive(null); setError(e.message); } });
+    load();
+    const timer = setInterval(load, 60000);
+    return () => { active = false; clearInterval(timer); };
+  }, []);
+  return { live, error };
+}
+function LiveStation({ live, error, station, compact = false }) {
+  const current = live?.latest;
+  return (
+    <section className={`live-station ${compact ? "compact" : ""}`} id={!compact ? "monitoramento" : undefined}>
+      <div className="live-station-head">
+        <div>
+          <span className="caps">LEITURA PÚBLICA · DEFESA CIVIL SC</span>
+          <h2>Rio dos Índios <small>{station?.code || "DCSC-00043"}</small></h2>
+        </div>
+        <a href="https://pdc.presidentegetulio.sc.gov.br/monitoramento" target="_blank" rel="noopener noreferrer">
+          Portal municipal <Icon name="arrow" size={16} />
+        </a>
       </div>
-      <div className="official-station-copy">
-        <span className="caps">ESTAÇÃO OFICIAL DE REFERÊNCIA</span>
-        <h3 id="official-station-title">
-          {station.name} <span>{station.code}</span>
-        </h3>
-        <p>
-          {station.region} · Bacia {station.basin}. Consulte nível do rio e chuva
-          diretamente na Defesa Civil SC. {demo
-            ? "As cotas do cenário histórico abaixo são simuladas e não vêm desta estação."
-            : "As leituras oficiais atuais estão disponíveis no portal da Defesa Civil."}
-        </p>
+      <div className="live-station-body">
+        <div className="live-reading">
+          <strong>{meters(current?.water_level_cm)}</strong>
+          <span className={`data-state ${live?.status === "ATUALIZADO" ? "fresh" : ""}`}>
+            {live?.status === "ATUALIZADO" ? "Leitura recente" : live?.status === "ATRASADO" ? "Leitura antiga" : "Sem leitura"}
+          </span>
+          <small>{current ? `Publicado em ${date(current.observed_at)}` : error || "Consultando fonte municipal…"}</small>
+        </div>
+        {!compact && <div className="live-chart">
+          <span className="caps">ÚLTIMAS LEITURAS PUBLICADAS</span>
+          <Graph readings={live?.items || []} threshold={null} />
+        </div>}
       </div>
-      <a href={station.url} target="_blank" rel="noopener noreferrer">
-        Ver leituras oficiais <Icon name="arrow" size={17} />
-      </a>
+      <div className="live-source">
+        <span>Fonte: dados DCSC-00043 reproduzidos pelo portal municipal. Horário acima é o de publicação na base.</span>
+        <a href={station?.url || "https://monitoramento.defesacivil.sc.gov.br/estacao/DCSC-00043"} target="_blank" rel="noopener noreferrer">Estação original ↗</a>
+      </div>
     </section>
   );
+}
 const EventCard = ({ item, open }) => (
   <button className="event-card" onClick={() => open(item.id)}>
     <div className="event-top">
@@ -226,7 +252,7 @@ function Graph({ readings, threshold }) {
         className="graph"
         viewBox="0 0 600 210"
         role="img"
-        aria-label="Evolução das leituras e cota de referência"
+        aria-label={threshold == null ? "Evolução das leituras" : "Evolução das leituras e cota de referência"}
       >
         <defs>
           <linearGradient id="g" x2="0" y2="1">
@@ -245,23 +271,10 @@ function Graph({ readings, threshold }) {
             strokeDasharray="4 6"
           />
         ))}
-        <line
-          x1="24"
-          x2="576"
-          y1={ty}
-          y2={ty}
-          stroke="#cb9657"
-          strokeDasharray="6 4"
-        />
-        <text
-          x="575"
-          y={Math.max(13, ty - 7)}
-          textAnchor="end"
-          fill="#a06e36"
-          fontSize="12"
-        >
-          Cota {cm(threshold)}
-        </text>
+        {threshold != null && <>
+          <line x1="24" x2="576" y1={ty} y2={ty} stroke="#ae8057" strokeDasharray="6 4" />
+          <text x="575" y={Math.max(13, ty - 7)} textAnchor="end" fill="#86613d" fontSize="12">Cota {cm(threshold)}</text>
+        </>}
         <path d={`${path} L576 195 L24 195 Z`} fill="url(#g)" />
         <path
           d={path}
@@ -303,7 +316,7 @@ function Graph({ readings, threshold }) {
     </>
   );
 }
-function HeroScene({ event, open }) {
+function HeroScene({ event }) {
   const [scene, setScene] = useState(null);
   const [failed, setFailed] = useState(false);
   useEffect(() => {
@@ -336,102 +349,27 @@ function HeroScene({ event, open }) {
           <Icon name="protection" size={100} />
         </div>
       )}
-      <div className="art-topline">
-        <span className="art-tag">
-          <Icon name="pin" size={13} /> ÁREA PILOTO
-        </span>
-        <span>N ↑</span>
-      </div>
       <div className="art-caption">
-        <span>PRESIDENTE GETÚLIO · SC</span>
-        <strong>Um olhar sobre o território.</strong>
-        <p>
+        <span>
           {scene && !failed
-            ? `${scene.source === "CDSE" ? "Copernicus" : "Referência visual"} · ${date(scene.acquired_at, { dateStyle: "medium" })}`
+            ? `Área de estudo · Copernicus · ${date(scene.acquired_at, { dateStyle: "medium" })}`
             : "Rios Krauel e dos Índios · área de estudo"}
-        </p>
-        {scene && !failed && (
-          <button className="art-open" onClick={() => open(event.id)}>
-            Abrir comparação <Icon name="arrow" size={16} />
-          </button>
-        )}
+        </span>
       </div>
     </div>
   );
 }
-function SystemPurpose({ navigate, open, event, demo }) {
-  const actions = [
-    {
-      icon: "wave",
-      title: "Acompanhar os níveis",
-      description:
-        "Consulte a evolução das cotas, a referência de monitoramento e a situação dos dados.",
-      label: "Ver monitoramento",
-      action: () =>
-        document
-          .getElementById("monitoramento")
-          ?.scrollIntoView({ behavior: "smooth", block: "start" }),
-    },
-    {
-      icon: "layers",
-      title: "Comparar as imagens",
-      description:
-        "Observe o rio antes e depois do gatilho, lado a lado ou por sobreposição de cenas Sentinel.",
-      label: "Comparar imagens",
-      action: () => (event ? open(event.id) : navigate("events")),
-    },
-    {
-      icon: "shield",
-      title: "Consultar as evidências",
-      description:
-        "Explore eventos e confira as datas, a origem das imagens e os detalhes de cada registro.",
-      label: "Explorar histórico",
-      action: () => navigate("events"),
-    },
-  ];
+function SystemPurpose({ navigate, open, event }) {
   return (
     <section className="purpose" aria-labelledby="purpose-title">
-      <div className="purpose-intro">
-        <div className="purpose-icon" aria-hidden="true">
-          <Icon name="protection" size={27} />
-        </div>
-        <div>
-          <span className="caps">OBJETIVO DO SISTEMA</span>
-          <h2 id="purpose-title">
-            Informação para apoiar a análise de inundações.
-          </h2>
-          <p>
-            Reunir níveis dos rios e imagens de satélite de Presidente Getúlio
-            para acompanhar o cenário, comparar momentos e consultar evidências
-            em um só lugar.
-          </p>
-        </div>
+      <div>
+        <span className="caps">OBJETIVO</span>
+        <h2 id="purpose-title">Acompanhar o rio e consultar imagens de eventos.</h2>
       </div>
-      <div className="purpose-grid">
-        {actions.map(({ icon, title, description, label, action }, index) => (
-          <article className="purpose-card" key={title}>
-            <div className="purpose-card-top">
-              <Icon name={icon} size={25} />
-              <span>0{index + 1}</span>
-            </div>
-            <h3>{title}</h3>
-            <p>{description}</p>
-            <button className="text-link" onClick={action}>
-              {label}
-              <Icon name="arrow" size={16} />
-            </button>
-          </article>
-        ))}
-      </div>
-      <div className="purpose-footnote">
-        <Icon name="info" size={16} />
-        <span>
-          {demo
-            ? "Modo demonstração: níveis e gatilho simulados. "
-            : "Projeto acadêmico de uso informativo. "}
-          O sistema não emite alertas oficiais nem substitui as orientações da
-          Defesa Civil.
-        </span>
+      <div className="purpose-actions">
+        <button onClick={() => document.getElementById("monitoramento")?.scrollIntoView({ behavior: "smooth" })}>Ver nível atual</button>
+        <button onClick={() => event ? open(event.id) : navigate("events")}>Comparar imagens</button>
+        <button onClick={() => navigate("events")}>Consultar eventos</button>
       </div>
     </section>
   );
@@ -440,6 +378,7 @@ function Dashboard({ navigate, open }) {
   let [data, setData] = useState(),
     [readings, setReadings] = useState([]),
     [error, setError] = useState("");
+  const { live, error: liveError } = useLiveStation();
   useEffect(() => {
     let active = true;
     let load = () =>
@@ -467,25 +406,15 @@ function Dashboard({ navigate, open }) {
   if (!data)
     return <main className="container section">Carregando painel…</main>;
   let c = data.config,
-    r = data.reading,
-    demo = c?.source_mode === "DEMO";
+    r = data.reading;
   return (
     <>
       <section className="hero">
         <div className="container hero-grid">
           <div>
-            <div className="eyebrow">
-              <i /> ANÁLISE DE INUNDAÇÕES · PROJETO ACADÊMICO
-            </div>
-            <h1>
-              Dados do rio.
-              <br />
-              <em>Evidências à vista.</em>
-            </h1>
-            <p>
-              Acompanhe níveis, compare imagens de satélite e consulte o
-              histórico para entender o cenário dos rios em Presidente Getúlio.
-            </p>
+            <div className="eyebrow">PRESIDENTE GETÚLIO · SC</div>
+            <h1>Monitoramento fluvial</h1>
+            <p>Leituras públicas e comparação de imagens de satélite.</p>
             <div className="hero-actions">
               <button
                 className="btn primary"
@@ -496,16 +425,16 @@ function Dashboard({ navigate, open }) {
                 }
               >
                 {data.recent_events.length
-                  ? "Ver comparação recente"
+                  ? "Ver comparação de 2023"
                   : "Explorar eventos"}{" "}
                 <Icon name="arrow" size={18} />
               </button>
               <button className="btn ghost" onClick={() => navigate("about")}>
-                Como funciona
+                Sobre o projeto
               </button>
             </div>
           </div>
-          <HeroScene event={data.recent_events[0]} open={open} />
+          <HeroScene event={data.recent_events[0]} />
         </div>
       </section>
       <main className="container content">
@@ -513,107 +442,23 @@ function Dashboard({ navigate, open }) {
           navigate={navigate}
           open={open}
           event={data.recent_events[0]}
-          demo={demo}
         />
-        {data.recent_events[0]?.scenario_title && (
-          <section className="historical-callout">
-            <div>
-              <span className="caps">CASO HISTÓRICO DISPONÍVEL</span>
-              <h3>{data.recent_events[0].scenario_title}</h3>
-              <p>
-                Conheça o episódio de Presidente Getúlio, compare imagens reais
-                anteriores e posteriores e consulte as fontes oficiais. Os
-                níveis são simulados.
-              </p>
-            </div>
-            <button
-              className="btn outline"
-              onClick={() => open(data.recent_events[0].id)}
-            >
-              Abrir caso histórico <Icon name="arrow" size={17} />
-            </button>
-          </section>
-        )}
-        <div className="section-head" id="monitoramento">
+        <LiveStation live={live} error={liveError} station={data.official_station} />
+        <div className="section-head demo-section-head">
           <div>
-            <span className="caps">VISÃO GERAL</span>
-            <h2>Situação do monitoramento</h2>
+            <span className="caps">CENÁRIO HISTÓRICO · DADOS SIMULADOS</span>
+            <h2>Novembro de 2023</h2>
           </div>
-          <span className="muted">
-            <Icon name="clock" size={16} /> Consultado em{" "}
-            {date(data.updated_at)}
-          </span>
         </div>
-        <Notice demo={demo} />
-        <OfficialStation station={data.official_station} demo={demo} />
-        <div className="stats">
-          <article className="stat important">
-            <span>
-              <Icon name="wave" /> {demo ? "Última cota simulada" : "Última leitura válida"}
-            </span>
-            <strong>{cm(r?.water_level_cm)}</strong>
-            <small>
-              {r
-                ? `Medição em ${date(r.observed_at)}`
-                : "Aguardando primeira leitura"}
-            </small>
-            <Badge tone={data.data_status === "ATUALIZADO" ? "green" : "amber"}>
-              {names[data.data_status]}
-            </Badge>
-          </article>
-          <article className="stat">
-            <span>
-              <Icon name="layers" /> Cota de referência
-            </span>
-            <strong>{cm(c?.threshold_cm)}</strong>
-            <small>{c?.threshold_source || "Nenhuma configuração ativa"}</small>
-          </article>
-          <article className="stat">
-            <span>
-              <Icon name="pin" /> {demo ? "Estação do cenário" : "Estação monitorada"}
-            </span>
-            <strong className="station-number">{c?.station_code || "—"}</strong>
-            <small>
-              {c?.station_name || "Configure uma estação para começar"}
-            </small>
-            <small>
-              Integração:{" "}
-              {names[data.integration_status] || data.integration_status || "—"}
-            </small>
-          </article>
-        </div>
-        <div className="dashboard-grid">
-          <article className="panel">
-            <div className="section-head compact">
-              <div>
-                <span className="caps">LEITURAS RECENTES</span>
-                <h3>{demo ? "Evolução simulada da cota" : "Evolução da cota"}</h3>
-              </div>
-              <span className="muted">{readings.length} medições</span>
-            </div>
-            <Graph readings={readings} threshold={c?.threshold_cm} />
-          </article>
-          <article className="panel context">
-            <span className="caps">SOBRE OS DADOS</span>
-            <h3>Uma leitura com contexto.</h3>
-            <p>
-              O gatilho acontece quando uma leitura válida passa de abaixo para
-              igual ou acima da cota registrada.{" "}
-              {demo
-                ? "Nesta demonstração, os níveis são simulados e a comparação usa imagens reais do Sentinel-2."
-                : "Depois o sistema busca cenas de radar Sentinel-1 comparáveis."}
-            </p>
-            <div>
-              <Icon name="shield" /> Origem e qualidade preservadas
-            </div>
-            <div>
-              <Icon name="clock" /> Horários no fuso de Brasília
-            </div>
-            <div>
-              <Icon name="image" /> Comparação após processamento
-            </div>
-          </article>
-        </div>
+        <article className="panel scenario-panel">
+          <div className="scenario-summary">
+            <div><span className="caps">ÚLTIMA COTA SIMULADA</span><strong>{cm(r?.water_level_cm)}</strong></div>
+            <div><span className="caps">REFERÊNCIA SIMULADA</span><strong>{cm(c?.threshold_cm)}</strong></div>
+            <p>O episódio foi documentado em 2023. O gráfico usa valores didáticos; as imagens são cenas reais de antes e depois.</p>
+          </div>
+          <Graph readings={readings} threshold={c?.threshold_cm} />
+          <a className="source-link" href="https://www2.tjsc.jus.br/web/tjsc/atos-normativos-e-suspensao-de-prazos-e-expediente/presidente-getulio/portaria_2023115.pdf" target="_blank" rel="noopener noreferrer">Documento da ocorrência ↗</a>
+        </article>
         <div className="section-head events-head">
           <div>
             <span className="caps">HISTÓRICO</span>
@@ -625,7 +470,7 @@ function Dashboard({ navigate, open }) {
         </div>
         {data.recent_events.length ? (
           <div className="event-grid">
-            {data.recent_events.map((x) => (
+            {data.recent_events.slice(0, 1).map((x) => (
               <EventCard key={x.id} item={x} open={open} />
             ))}
           </div>
@@ -648,6 +493,7 @@ function Events({ open }) {
   let [mode, setMode] = useState("SIMULACAO"),
     [data, setData] = useState(),
     [error, setError] = useState("");
+  const { live, error: liveError } = useLiveStation();
   useEffect(() => {
     setData(null);
     setError("");
@@ -660,7 +506,7 @@ function Events({ open }) {
       <div className="page-head">
         <span className="caps">CONSULTA PÚBLICA</span>
         <h1>Histórico de eventos</h1>
-        <p>Explore registros publicados e veja a origem de cada evidência.</p>
+        <p>Ocorrências publicadas e sua origem.</p>
       </div>
       <div className="tabs" role="tablist">
         <button
@@ -680,6 +526,7 @@ function Events({ open }) {
           Demonstrações
         </button>
       </div>
+      {mode === "AO_VIVO" && <LiveStation live={live} error={liveError} station={live?.station} compact />}
       {mode === "SIMULACAO" && <Notice replay />}
       {error && <div className="error">{error}</div>}
       {!data ? (
@@ -699,9 +546,7 @@ function Events({ open }) {
         <div className="empty">
           <Icon name="image" size={28} />
           <h3>Nenhum evento neste modo</h3>
-          <p>
-            Eventos são publicados quando ao menos uma evidência foi processada.
-          </p>
+          <p>{mode === "AO_VIVO" ? "Há leitura real acima, mas nenhum evento com imagens foi publicado neste modo." : "Nenhuma demonstração publicada."}</p>
         </div>
       )}
     </main>
@@ -1059,7 +904,7 @@ function About() {
           [
             "01",
             "Coletar",
-            "O sistema consulta a série telemétrica da ANA e registra cota, horário e qualidade.",
+            "O painel mostra a série pública DCSC-00043. A coleta ANA para eventos automáticos depende de credenciais e validação.",
           ],
           [
             "02",
