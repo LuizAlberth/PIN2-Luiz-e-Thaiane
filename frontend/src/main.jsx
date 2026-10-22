@@ -1192,6 +1192,8 @@ function Admin({ open }) {
               <span className="caps">INTEGRAÇÕES</span>
               <h3>Disponibilidade</h3>
               <p>
+                Defesa Civil DCSC: {model.integrations.dcsc_configured ? "acesso configurado" : "sem acesso"}
+                <br />
                 ANA:{" "}
                 {model.integrations.ana_configured
                   ? "configurada"
@@ -1201,6 +1203,8 @@ function Admin({ open }) {
                 {model.integrations.cdse_configured
                   ? "configurado"
                   : "sem credenciais"}
+                <br />
+                Última verificação das imagens: {date(model.integrations.satellite_checked_at)}
                 <br />
                 Imagens: {model.integrations.object_storage || "—"}
               </p>
@@ -1356,9 +1360,10 @@ function Admin({ open }) {
             <span className="caps">MODO REAL</span>
             <h3>Ativar nova configuração</h3>
             <p>
-              A estação e as cotas são conferidas na ANA antes de ativar. Cada
-              alteração cria uma versão.
+              Este formulário ativa somente a coleta ANA. A estação DCSC-00043
+              exibida na página vem da Defesa Civil e tem outra origem.
             </p>
+            <p className="admin-source-note">Para ativar eventos automáticos, o servidor exige credenciais ANA, uma estação fluviométrica operante com leitura válida nas últimas 48 horas e uma cota documentada. Nenhum desses dados é inventado pelo formulário.</p>
             <div className="form-grid">
               {fields.map(([key, label]) => (
                 <label
@@ -1409,8 +1414,7 @@ function Admin({ open }) {
             </div>
             {!model.integrations.ana_configured && (
               <p className="hint">
-                Configure ANA_IDENTIFICADOR e ANA_SENHA no servidor para
-                habilitar o modo real.
+                Ativação indisponível neste ambiente: ANA_IDENTIFICADOR e ANA_SENHA estão vazios. O acesso Copernicus e a leitura DCSC continuam funcionando separadamente.
               </p>
             )}
           </article>
@@ -1579,11 +1583,11 @@ function RecentCompare({ pair, error }) {
               <a href={scene.images[view]} target="_blank" rel="noreferrer" title="Abrir imagem em tamanho completo">
                 <img src={scene.images[view]} alt={`Rio dos Índios na passagem de ${date(scene.acquired_at, { dateStyle: "medium" })}`} />
               </a>
-              <figcaption><strong>{index === 0 ? "Passagem anterior" : "Passagem mais recente utilizável"}</strong><span>{date(scene.acquired_at, { dateStyle: "medium" })} · {scene.cloud_percent}% encoberto no recorte</span></figcaption>
+              <figcaption><strong>{index === 0 ? "Passagem anterior" : "Passagem mais recente utilizável"}</strong><span>{date(scene.acquired_at, { dateStyle: "medium" })} · {scene.river_obscured_percent == null ? `${scene.cloud_percent}% encoberto no recorte` : `${scene.river_obscured_percent}% encoberto no rio`}</span></figcaption>
             </figure>)}
           </div>}
           <div className="latest-notes">
-            <p>{pair.latest_pass ? `Última passagem catalogada: ${date(pair.latest_pass.acquired_at, { dateStyle: "medium" })} (${pair.latest_pass.tile_cloud_percent}% de nuvens no tile).` : ""} A comparação usa as últimas passagens com até 10% de pixels encobertos ou inválidos no recorte.</p>
+            <p>{pair.latest_pass ? `Última passagem catalogada: ${date(pair.latest_pass.acquired_at, { dateStyle: "medium" })} (${pair.latest_pass.tile_cloud_percent}% de nuvens no tile).` : ""} A comparação usa as últimas passagens com até 10% de pixels encobertos ou inválidos no recorte.{pair.rejected && <> <a className="rejected-link" href={pair.rejected.image_url} target="_blank" rel="noreferrer">Ver imagem encoberta de {date(pair.rejected.acquired_at, { dateStyle: "medium" })} ({pair.rejected.obscured_percent}% do recorte) ↗</a></>}</p>
             <p>Azul indica possível água por SCL/NDWI; não é uma mancha oficial de inundação. Resolução nativa de 10–20 m. Catálogo consultado em {date(pair.checked_at)}.</p>
           </div>
         </>}

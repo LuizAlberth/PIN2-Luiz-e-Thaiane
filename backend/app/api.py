@@ -15,7 +15,7 @@ from .service import active_config, create_config, demo_config, demo_replay, ing
 from .adapters import ANAClient, CDSEClient, ProviderError, parsed_time
 from .storage import get
 from .station_reference import OFFICIAL_STATION
-from .pdc import live_station
+from .pdc import PDCClient, live_station
 from .recent_satellite import load_latest
 from .satellite_demo import load_pair, HISTORICAL_CONTEXT
 
@@ -199,8 +199,13 @@ def latest_satellite():
     return {'available': True, 'provider': manifest['provider'], 'collection': manifest['collection'],
         'bbox': manifest['bbox'], 'checked_at': manifest['checked_at'],
         'latest_pass': manifest.get('latest_pass'),
+        'rejected': ({'acquired_at': manifest['rejected']['acquired_at'],
+            'obscured_percent': manifest['rejected']['obscured_percent'],
+            'river_obscured_percent': manifest['rejected'].get('river_obscured_percent'),
+            'image_url': '/api/satellite/latest/rejected'} if manifest.get('rejected') else None),
         'scenes': [{'product_id': scene['product_id'], 'acquired_at': scene['acquired_at'],
-            'cloud_percent': scene['cloud_percent'], 'tile': scene['tile'], 'orbit': scene['orbit'],
+            'cloud_percent': scene['cloud_percent'], 'river_obscured_percent': scene.get('river_obscured_percent'),
+            'tile': scene['tile'], 'orbit': scene['orbit'],
             'images': {view: f'/api/satellite/latest/image/{index}?view={view}' for view in ('default', 'natural')}}
             for index, scene in enumerate(manifest['scenes'])]}
 
@@ -213,6 +218,20 @@ def latest_satellite_image(index: int, view: Literal['default', 'natural'] = 'de
     image = get(record['key'])
     if hashlib.sha256(image).hexdigest() != record['sha256']:
         raise HTTPException(503, 'Checksum da imagem divergente')
+    return Response(image, media_type='image/png', headers={'Cache-Control': 'public, max-age=300'})
+
+@app.get('/api/satellite/latest/rejected')
+def latest_rejected_image():
+    manifest = load_latest()
+    if not manifest or not manifest.get('rejected'):
+        raise HTTPException(404, 'Prévia encoberta não disponível')
+    record = manifest['rejected']['image']
+    try:
+        image = get(record['key'])
+    except Exception as exc:
+        raise HTTPException(503, 'Prévia encoberta indisponível') from exc
+    if hashlib.sha256(image).hexdigest() != record['sha256']:
+        raise HTTPException(503, 'Checksum da prévia divergente')
     return Response(image, media_type='image/png', headers={'Cache-Control': 'public, max-age=300'})
 
 @app.get('/api/historical/2023')
@@ -385,5 +404,8 @@ def audits(db: Session = Depends(session), user: User = Depends(current_admin)):
 
 @app.get('/api/admin/integrations')
 def integrations(user: User = Depends(current_admin)):
+    satellite = load_latest()
     return {'ana_configured': ANAClient().ready, 'cdse_configured': CDSEClient().ready,
+        'dcsc_configured': PDCClient().ready,
+        'satellite_checked_at': satellite['checked_at'] if satellite else None,
         'object_storage': 'MinIO / S3' if os.getenv('S3_ENDPOINT') else 'Local'}

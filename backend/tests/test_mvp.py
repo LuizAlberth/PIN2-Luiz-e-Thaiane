@@ -330,12 +330,29 @@ def test_recent_pair_skips_cloudy_pass_and_preserves_two_dates(monkeypatch):
     monkeypatch.setattr(recent_satellite, '_scene', lambda _client, feature: None if feature is features[0]
         else {'product_id': feature['id'], 'acquired_at': feature['properties']['datetime'],
             'cloud_percent': 0.0, 'tile': 'T22JFR', 'orbit': 'R038', 'images': {}})
+    monkeypatch.setattr(recent_satellite, '_rejected_preview', lambda *_args: {'product_id': features[0]['id'],
+        'acquired_at': features[0]['properties']['datetime'], 'obscured_percent': 100.0,
+        'image': {'key': 'rejected.png', 'sha256': 'checksum'}})
     saved = {}
     monkeypatch.setattr(recent_satellite, 'put', lambda key, data, **_kwargs: saved.update({key: data}) or 'checksum')
     pair = recent_satellite.refresh_latest(FakeClient())
     assert [scene['acquired_at'][:10] for scene in pair['scenes']] == [days[2], days[1]]
     assert pair['latest_pass']['acquired_at'][:10] == days[0]
+    assert pair['rejected']['obscured_percent'] == 100.0
     assert json.loads(saved[recent_satellite.MANIFEST_KEY])['scenes'] == pair['scenes']
+
+def test_river_corridor_rejects_cloud_even_when_area_is_mostly_clear():
+    quality = Image.new('L', (256, 256), 4)
+    corridor = recent_satellite._river_mask(quality.size)
+    # A cloud over one reach hides the river while most of the wider image remains clear.
+    for y in range(96, 150):
+        for x in range(100, 180):
+            if corridor.getpixel((x, y)):
+                quality.putpixel((x, y), 9)
+    out = BytesIO(); quality.save(out, format='PNG')
+    assert recent_satellite._quality(out.getvalue()) < 10
+    assert recent_satellite._river_obscured(out.getvalue()) > 10
+    assert recent_satellite._river_visible(load_pair()['BASELINE'][1]['default'])
 
 def test_historical_pair_is_public_without_a_demo_event(db):
     session, _ = db
