@@ -16,6 +16,8 @@ from .adapters import ANAClient, CDSEClient, ProviderError, parsed_time
 from .storage import get
 from .station_reference import OFFICIAL_STATION
 from .pdc import live_station
+from .recent_satellite import load_latest
+from .satellite_demo import load_pair, HISTORICAL_CONTEXT
 
 @asynccontextmanager
 async def lifespan(app):
@@ -188,6 +190,49 @@ def dcsc_station():
         return live_station()
     except ProviderError as exc:
         raise HTTPException(503, str(exc)) from exc
+
+@app.get('/api/satellite/latest')
+def latest_satellite():
+    manifest = load_latest()
+    if not manifest:
+        return {'available': False, 'reason': 'Aguardando duas passagens Sentinel-2 com baixa nebulosidade na área do rio.'}
+    return {'available': True, 'provider': manifest['provider'], 'collection': manifest['collection'],
+        'bbox': manifest['bbox'], 'checked_at': manifest['checked_at'],
+        'latest_pass': manifest.get('latest_pass'),
+        'scenes': [{'product_id': scene['product_id'], 'acquired_at': scene['acquired_at'],
+            'cloud_percent': scene['cloud_percent'], 'tile': scene['tile'], 'orbit': scene['orbit'],
+            'images': {view: f'/api/satellite/latest/image/{index}?view={view}' for view in ('default', 'natural')}}
+            for index, scene in enumerate(manifest['scenes'])]}
+
+@app.get('/api/satellite/latest/image/{index}')
+def latest_satellite_image(index: int, view: Literal['default', 'natural'] = 'default'):
+    manifest = load_latest()
+    if not manifest or index not in (0, 1):
+        raise HTTPException(404, 'Imagem não disponível')
+    record = manifest['scenes'][index]['images'][view]
+    image = get(record['key'])
+    if hashlib.sha256(image).hexdigest() != record['sha256']:
+        raise HTTPException(503, 'Checksum da imagem divergente')
+    return Response(image, media_type='image/png', headers={'Cache-Control': 'public, max-age=300'})
+
+@app.get('/api/historical/2023')
+def historical_2023():
+    try:
+        pair = load_pair()
+    except ProviderError as exc:
+        raise HTTPException(503, str(exc)) from exc
+    return {'mode': 'SIMULACAO', 'snapshot': {'historical_context': HISTORICAL_CONTEXT},
+        'scenes': {role: {'acquired_at': iso(candidate['acquired_at']), 'has_natural': True,
+            'image_url': f'/api/historical/2023/image/{role}'}
+            for role, (candidate, _) in pair.items()}}
+
+@app.get('/api/historical/2023/image/{role}')
+def historical_2023_image(role: Literal['BASELINE', 'POST_EVENT'], view: Literal['default', 'natural'] = 'default'):
+    try:
+        image = load_pair()[role][1][view]
+    except ProviderError as exc:
+        raise HTTPException(503, str(exc)) from exc
+    return Response(image, media_type='image/png', headers={'Cache-Control': 'public, max-age=86400'})
 
 @app.get('/api/events')
 def events(mode: Literal['AO_VIVO','SIMULACAO'] = 'AO_VIVO', page: int = 1, db: Session = Depends(session)):

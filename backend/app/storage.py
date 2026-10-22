@@ -13,7 +13,7 @@ def client():
         aws_access_key_id=os.getenv('S3_ACCESS_KEY'), aws_secret_access_key=os.getenv('S3_SECRET_KEY'),
         config=Config(signature_version='s3v4'))
 
-def put(key: str, data: bytes) -> str:
+def put(key: str, data: bytes, content_type='image/png') -> str:
     checksum = hashlib.sha256(data).hexdigest()
     if ENDPOINT:
         c = client()
@@ -21,7 +21,7 @@ def put(key: str, data: bytes) -> str:
             c.head_bucket(Bucket=BUCKET)
         except Exception:
             c.create_bucket(Bucket=BUCKET)
-        c.put_object(Bucket=BUCKET, Key=key, Body=data, ContentType='image/png')
+        c.put_object(Bucket=BUCKET, Key=key, Body=data, ContentType=content_type)
     else:
         target = LOCAL_DIR / key
         target.parent.mkdir(parents=True, exist_ok=True)

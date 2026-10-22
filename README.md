@@ -1,73 +1,49 @@
-# Mancha de Inundação · MVP PIN2
+# Monitoramento fluvial · Presidente Getúlio
 
-Piloto de Presidente Getúlio, SC. Painel React, API FastAPI, worker com fila persistente, comparação lado a lado/sobreposição, administração e rastreabilidade.
+MVP acadêmico em uma página: nível público do Rio dos Índios, comparação das passagens Sentinel-2 mais recentes que mostram o recorte do rio e registros de eventos. O episódio de novembro de 2023 aparece somente como uma curiosidade histórica em janela própria.
 
-O painel reúne o nível atual do Rio dos Índios, um cenário histórico didático e as comparações de imagens. A interface usa cores discretas e deixa a origem e a data das informações próximas dos dados.
+## O que é real
 
-O nível atual vem das leituras **DCSC-00043 — Rio dos Índios**, reproduzidas pelo [Portal municipal de Proteção e Defesa Civil](https://pdc.presidentegetulio.sc.gov.br/monitoramento). A [página original da estação na Defesa Civil SC](https://monitoramento.defesacivil.sc.gov.br/estacao/DCSC-00043) também está vinculada. A consulta é pública e somente de leitura; o painel atualiza a cada minuto e marca leituras com mais de 30 minutos como antigas. O horário exibido é o de **publicação na base municipal** (`created_at`), pois o campo de horário da estação publicado pelo espelho tem uma divergência de três horas. Essa fonte é **DCSC, não ANA**. Ela ainda não alimenta o gatilho automático de eventos, que exige cota validada e a integração hidrométrica configurada. O gráfico de 2023 usa somente cotas simuladas. A [cessão da área para instalação da estação na Rua Niterói Atlântico](https://portal.doe.sea.sc.gov.br/repositorio/2024/20241023/Jornal/22381.pdf) foi publicada em outubro de 2024; portanto não atribuímos ao sensor medições do episódio de 2023.
+- **Nível do rio:** estação [DCSC-00043](https://monitoramento.defesacivil.sc.gov.br/estacao/DCSC-00043), reproduzida pelo [portal municipal da Defesa Civil](https://pdc.presidentegetulio.sc.gov.br/monitoramento). O painel consulta a base pública em modo somente leitura a cada minuto. O horário mostrado é o de publicação (created_at) porque o horário do sensor espelhado apresenta uma divergência de três horas. Após 30 minutos, a leitura é marcada como antiga. Esta fonte é **DCSC, não ANA**.
+- **Imagens recentes:** catálogo e Process API do Copernicus Data Space Ecosystem, coleção Sentinel-2 L2A. O sistema procura passagens do tile T22JFR, órbita R038, no mesmo recorte dos rios Krauel e dos Índios. A seleção usa no máximo 10% de nuvens, sombra, neve ou pixels inválidos **dentro do recorte**. Duas cenas completas de datas diferentes são publicadas juntas, com produto, data, checksum e porcentagem de pixels rejeitados. O worker verifica o catálogo a cada seis horas; se não houver um par novo, mantém o último par validado.
+- **Transparência temporal:** o painel informa também a última passagem catalogada, mesmo que esteja encoberta. Na verificação de 22/10/2026, a passagem mais recente era de 20/10 (89,9% de nuvens no tile); as duas imagens utilizáveis mais recentes eram de 09/07 e 19/07/2026, ambas sem nuvens no recorte. Essas datas mudam quando uma passagem nova atender à validação.
+- **História de 2023:** ocorrência documentada pelo [TJSC](https://www2.tjsc.jus.br/web/tjsc/atos-normativos-e-suspensao-de-prazos-e-expediente/presidente-getulio/portaria_2023115.pdf), com cenas reais de 05/11 e 15/12/2023. As cotas do replay são **simuladas**. Nenhuma imagem representa o pico da enchente nem prova normalização hidrológica. A curiosidade funciona sem registrar um evento de demonstração no banco.
 
-## Apresentação sem acesso ANA
+O azul das imagens é um destaque de possível água por SCL/NDWI, não uma mancha oficial de inundação. A resolução nativa do Sentinel-2 é de 10–20 m: o arquivo exibido em 1024 × 1024 não acrescenta detalhes ao sensor. A página não emite alertas oficiais.
 
-O cenário representa as **enchentes de 16 e 17 de novembro de 2023**, documentadas na [Portaria 115 do TJSC](https://www2.tjsc.jus.br/web/tjsc/atos-normativos-e-suspensao-de-prazos-e-expediente/presidente-getulio/portaria_2023115.pdf). Usa **níveis e cota simulados** (300 cm, gatilho de 308 cm em 16/11/2023). As imagens são **reais do Sentinel-2 L2A**, obtidas via OAuth, Catalog e Process API do Copernicus:
+## Rodar no computador
 
-- Antes: 05/11/2023; depois: 15/12/2023. As duas imagens têm 0% de nuvens na área de comparação, medidos pelo SCL. Mesmo tile T22JFR/órbita R038, área, resolução de saída e processamento.
-- Recorte de cerca de 2,2 × 2,2 km na confluência dos rios Krauel e dos Índios.
-- **Água destacada**: cor natural com ganho 3,5 e destaque azul por SCL=6 ou NDWI>0 com NIR<0,15, excluindo sombras/nuvens. **Cor natural**: mesmas cenas, sem destaque.
-- Resolução nativa de 10–20 m. A saída de 1024 × 1024 amplia a visualização, sem acrescentar detalhe ao sensor. Trechos estreitos podem desaparecer; há falsos positivos. O azul não representa uma mancha oficial de inundação.
-- O episódio é real, mas as cenas mostram referências de antes e depois, **não o pico da enchente**. As passagens de 15/11 e 20/11/2023 têm 100% de nuvens no tile T22JFR no catálogo. A referência posterior não certifica normalidade hidrológica: não há medições oficiais ANA. A interface mostra uma linha do tempo e as fontes oficiais.
+Requisitos: Python 3.12+, Node.js e npm. Na raiz do repositório:
 
-As quatro imagens e o `manifest.json` ficam em `backend/app/assets/sentinel-2023/`, com os produtos reais, metadados retornados, evalscript e SHA-256. O par foi baixado e inspecionado visualmente. A demonstração funciona sem internet e sem novas chamadas ao Copernicus. Não há fallback para cenas artificiais. Imagens brancas, uniformes, transparentes ou arquivos com checksum divergente são rejeitados.
+    python3 -m venv .venv
+    .venv/bin/pip install -r backend/requirements.lock
+    npm --prefix frontend ci
+    cp .env.example .env
 
-### Iniciar localmente
+No .env, configure ADMIN_EMAIL, ADMIN_PASSWORD e APP_SECRET (mínimo de 32 caracteres). Para as leituras e imagens atuais, configure PDC_SUPABASE_ANON_KEY, CDSE_CLIENT_ID e CDSE_CLIENT_SECRET. O .env local desta entrega já está configurado; preserve-o. Ele é ignorado pelo Git. Para uma publicação permanente, obtenha um meio estável de acesso à base municipal com seus responsáveis.
 
-Com Python 3.12+ e Node, instale as dependências se necessário:
+    .venv/bin/python scripts/run_local.py
 
-```bash
-python3 -m venv .venv
-.venv/bin/pip install -r backend/requirements.lock
-npm --prefix frontend ci
-```
+Abra **http://localhost:5173**. O comando inicia API, worker e Vite. Ctrl+C encerra os três. O banco local é pin2.db; as imagens baixadas ficam em storage/. O worker procura automaticamente novas cenas. Para forçar uma consulta manual ao Copernicus:
 
-Configure `.env` a partir de `.env.example`, preenchendo `ADMIN_EMAIL`, `ADMIN_PASSWORD` (mínimo 4 caracteres no MVP local) e `APP_SECRET` (mínimo 32). Para exibir o nível atual, preencha `PDC_SUPABASE_ANON_KEY` com a chave pública anônima da integração do portal municipal; no ambiente desta entrega ela já está no `.env` local. Solicite ao mantenedor do portal uma forma estável de acesso antes de publicar o serviço para a população. Sem essa variável, o painel mostra a indisponibilidade da fonte e mantém o link para o portal. No ambiente já configurado, preserve o `.env` existente. As credenciais ficam apenas no servidor e o arquivo é ignorado pelo Git. API e worker carregam esse arquivo automaticamente no uso local.
+    .venv/bin/python scripts/refresh_sentinel_latest.py
 
-```bash
-.venv/bin/python scripts/run_local.py
-```
+Use **Admin** na própria página para entrar com a senha configurada no servidor. A página pública dispensa login. Os registros de simulação com imagens artificiais foram retirados do banco local desta entrega; o cenário histórico real continua disponível no pop-up.
 
-Abra **http://localhost:5173**. Em **Admin**, digite apenas a senha individual `ADMIN_PASSWORD` do `.env`; o e-mail fica configurado no servidor. O acesso é mantido enquanto a sessão da aba estiver válida. O hash administrativo acompanha a senha configurada no próximo início da API. Depois, clique **Iniciar demonstração**. Após o worker concluir os dois jobs, abra **Eventos → Demonstrações → Ver comparação**. Use **Água destacada / Cor natural**, **Lado a lado / Sobrepor** ou **Ampliar imagem**. O reprocessamento preserva as versões anteriores.
+## Eventos automáticos e hospedagem
 
-O banco local fica em `pin2.db` na raiz e as imagens publicadas em `storage/`. Ctrl+C encerra os três serviços. Eventos são listados pela criação, para que o replay recém-criado apareça antes dos registros antigos. Demonstrações antigas com imagens artificiais permanecem no histórico identificadas como ilustrações legadas; crie uma demonstração nova para o par real.
+As leituras DCSC e o par recente de satélite são independentes de um evento de cheia. A seção “Eventos monitorados” só recebe registros depois de uma integração hidrométrica configurada, passagem de uma cota validada e processamento das cenas. O fluxo ANA + Sentinel-1 GRD continua no backend, mas **não está ativo nem validado sem credenciais ANA e uma cota aprovada**. As imagens recentes do Sentinel-2 não devem ser interpretadas como evento detectado.
 
-### Atualizar o par diretamente no Sentinel
+Para executar com PostgreSQL/PostGIS e MinIO:
 
-Preencha `CDSE_CLIENT_ID` e `CDSE_CLIENT_SECRET` no `.env` e execute:
+    docker compose up --build -d
 
-```bash
-.venv/bin/python scripts/prepare_sentinel_demo.py
-```
-
-O comando consulta e processa as duas datas de referência, confere os identificadores de produto devolvidos pelo processamento e só publica o manifesto após validar o par completo. As imagens ficam prontas para os próximos eventos. ANA não participa dessa operação. Crédito das imagens: Copernicus Sentinel data 2023, processado pelo Sentinel Hub / Copernicus Data Space Ecosystem.
-
-## Fontes reais e Docker
-
-O fluxo ANA + Sentinel-1 GRD permanece disponível em separado. Para ativá-lo, configure `ANA_IDENTIFICADOR`, `ANA_SENHA` e as credenciais CDSE, valide a estação em Admin e registre uma cota com fonte oficial, validade e responsável. A validação exige estação fluviométrica operante, área contendo a estação e cota válida medida nas últimas 48 horas. Sem essas condições, somente a demonstração é usada. Uma demonstração não desativa uma configuração ANA ativa.
-
-```bash
-docker compose up --build -d
-```
-
-O `.env` também precisa conter as senhas PostgreSQL/MinIO. Abra **http://localhost:8080**; documentação em `/api/docs`; console MinIO em `http://localhost:9001`. PostgreSQL/PostGIS e MinIO persistem em volumes. Encerre com `docker compose down`, preservando os volumes. Docker não foi exercitado nesta correção.
-
-O worker registra tentativas, aplica espera crescente, retoma leases vencidos e permite reprocessar eventos. As imagens têm checksum e versões. Horários ANA sem fuso são interpretados como America/Sao_Paulo. O acesso ANA e o gatilho automático com medições reais não foram validados, pois não há credenciais ANA disponíveis. A leitura DCSC do portal municipal foi consultada com sucesso em 22/10/2026, mas é um espelho público sem contrato de disponibilidade documentado.
+Configure também POSTGRES_PASSWORD, S3_ACCESS_KEY e S3_SECRET_KEY no .env. Abra **http://localhost:8080**; a documentação da API está em /api/docs. API e worker compartilham o armazenamento MinIO. Para acesso público contínuo, hospede os serviços em um servidor com domínio, HTTPS, backups do banco/objetos, supervisão dos containers e credenciais próprias. docker compose down preserva os volumes.
 
 ## Validação
 
-```bash
-(cd backend && ../.venv/bin/pytest -q)
-npm --prefix frontend run build
-SMOKE_API_PORT=8001 SMOKE_WEB_PORT=5174 .venv/bin/python scripts/smoke_local.py
-```
+    (cd backend && ../.venv/bin/pytest -q)
+    npm --prefix frontend run build
+    SMOKE_API_PORT=8001 SMOKE_WEB_PORT=5174 .venv/bin/python scripts/smoke_local.py
 
-O smoke test usa banco e armazenamento temporários, inicia os três serviços, testa login, demonstração, publicação, imagens e reprocessamento e encerra seus processos. Não depende de contas externas.
-
-Referências: [Sentinel-2 L2A](https://documentation.dataspace.copernicus.eu/APIs/SentinelHub/Data/S2L2A.html), [autenticação CDSE](https://documentation.dataspace.copernicus.eu/APIs/SentinelHub/Overview/Authentication.html), [Sentinel-1 GRD](https://documentation.dataspace.copernicus.eu/APIs/SentinelHub/Data/S1GRD.html).
+O teste ponta a ponta usa banco e armazenamento temporários e não depende de contas externas. Referências técnicas: [Sentinel-2 L2A](https://documentation.dataspace.copernicus.eu/APIs/SentinelHub/Data/S2L2A.html), [autenticação CDSE](https://documentation.dataspace.copernicus.eu/APIs/SentinelHub/Overview/Authentication.html).

@@ -1525,96 +1525,135 @@ function Admin({ open }) {
     </main>
   );
 }
-function App() {
-  const parse = () =>
-    location.hash.startsWith("#/evento/")
-      ? { page: "detail", id: location.hash.split("/")[2] }
-      : { page: location.hash.replace("#/", "") || "dashboard" };
-  let [route, setRoute] = useState(parse);
+function useRecentSatellite() {
+  const [pair, setPair] = useState(null);
+  const [error, setError] = useState("");
   useEffect(() => {
-    let fn = () => setRoute(parse());
-    addEventListener("hashchange", fn);
-    return () => removeEventListener("hashchange", fn);
+    let active = true;
+    const load = () => api("/satellite/latest")
+      .then((value) => { if (active) { setPair(value); setError(""); } })
+      .catch((e) => { if (active) setError(e.message); });
+    load();
+    const timer = setInterval(load, 300000);
+    return () => { active = false; clearInterval(timer); };
   }, []);
-  const go = (page) => {
-      location.hash = `/${page}`;
-      scrollTo(0, 0);
-    },
-    open = (id) => {
-      location.hash = `/evento/${id}`;
-      scrollTo(0, 0);
-    };
+  return { pair, error };
+}
+
+function RecentCompare({ pair, error }) {
+  const [view, setView] = useState("default");
+  const [overlay, setOverlay] = useState(false);
+  const [split, setSplit] = useState(50);
+  const scenes = pair?.scenes || [];
   return (
-    <>
-      <header className="site-header">
-        <div className="container nav">
-          <button
-            className="brand"
-            onClick={() => go("dashboard")}
-            aria-label="Ir ao painel"
-          >
-            <span className="brand-icon">
-              <Icon name="protection" size={25} />
-            </span>
-            <span>
-              MANCHA<span className="brand-slash">/</span>INUNDAÇÃO
-              <small>PROJETO ACADÊMICO · SC</small>
-            </span>
-          </button>
-          <nav aria-label="Navegação principal">
-            <button
-              className={route.page === "dashboard" ? "active" : ""}
-              onClick={() => go("dashboard")}
-            >
-              Painel
-            </button>
-            <button
-              className={
-                ["events", "detail"].includes(route.page) ? "active" : ""
-              }
-              onClick={() => go("events")}
-            >
-              Eventos
-            </button>
-            <button
-              className={route.page === "about" ? "active" : ""}
-              onClick={() => go("about")}
-            >
-              Sobre
-            </button>
-            <button
-              className={`nav-admin ${route.page === "admin" ? "active" : ""}`}
-              onClick={() => go("admin")}
-            >
-              Admin <Icon name="arrow" size={15} />
-            </button>
-          </nav>
+    <section className="latest-section" id="imagens">
+      <div className="landing-section-head">
+        <div>
+          <span className="caps">MONITORAMENTO REAL · COPERNICUS SENTINEL-2</span>
+          <h2>Imagens recentes utilizáveis</h2>
+          <p>Mesmo recorte dos rios Krauel e dos Índios. Duas passagens com pouca nebulosidade para comparar a paisagem.</p>
         </div>
-      </header>
-      {route.page === "events" ? (
-        <Events open={open} />
-      ) : route.page === "detail" ? (
-        <Detail id={route.id} navigate={go} />
-      ) : route.page === "admin" ? (
-        <Admin open={open} />
-      ) : route.page === "about" ? (
-        <About />
-      ) : (
-        <Dashboard navigate={go} open={open} />
-      )}
-      <footer>
-        <div className="container footer-inner">
-          <div>
-            <strong>MANCHA/INUNDAÇÃO</strong>
-            <span>Presidente Getúlio · Santa Catarina</span>
+        {scenes.length === 2 && <div className="latest-controls">
+          <div className="segmented" aria-label="Visualização das imagens">
+            <button className={view === "default" ? "active" : ""} onClick={() => setView("default")}>Água destacada</button>
+            <button className={view === "natural" ? "active" : ""} onClick={() => setView("natural")}>Cor natural</button>
           </div>
-          <p>
-            Projeto acadêmico de apoio à análise · Não substitui informações
-            oficiais da Defesa Civil.
-          </p>
-        </div>
-      </footer>
-    </>
+          <div className="segmented" aria-label="Modo de comparação">
+            <button className={!overlay ? "active" : ""} onClick={() => setOverlay(false)}>Lado a lado</button>
+            <button className={overlay ? "active" : ""} onClick={() => setOverlay(true)}>Sobrepor</button>
+          </div>
+        </div>}
+      </div>
+      {error ? <p className="data-message">{error}</p> : !pair ? <p className="data-message">Consultando as imagens…</p>
+        : !pair.available ? <p className="data-message">{pair.reason}</p>
+        : <>
+          {overlay ? <div className="latest-overlay">
+            <div className="latest-overlay-images">
+              <img src={scenes[0].images[view]} alt={`Rio dos Índios em ${date(scenes[0].acquired_at, { dateStyle: "medium" })}`} />
+              <div style={{ clipPath: `inset(0 ${100 - split}% 0 0)` }}><img src={scenes[1].images[view]} alt={`Rio dos Índios em ${date(scenes[1].acquired_at, { dateStyle: "medium" })}`} /></div>
+              <i style={{ left: `${split}%` }} />
+            </div>
+            <label>Deslize para comparar as datas<input type="range" min="0" max="100" value={split} onChange={(e) => setSplit(+e.target.value)} /></label>
+          </div> : <div className="latest-pair">
+            {scenes.map((scene, index) => <figure key={scene.product_id}>
+              <a href={scene.images[view]} target="_blank" rel="noreferrer" title="Abrir imagem em tamanho completo">
+                <img src={scene.images[view]} alt={`Rio dos Índios na passagem de ${date(scene.acquired_at, { dateStyle: "medium" })}`} />
+              </a>
+              <figcaption><strong>{index === 0 ? "Passagem anterior" : "Passagem mais recente utilizável"}</strong><span>{date(scene.acquired_at, { dateStyle: "medium" })} · {scene.cloud_percent}% encoberto no recorte</span></figcaption>
+            </figure>)}
+          </div>}
+          <div className="latest-notes">
+            <p>{pair.latest_pass ? `Última passagem catalogada: ${date(pair.latest_pass.acquired_at, { dateStyle: "medium" })} (${pair.latest_pass.tile_cloud_percent}% de nuvens no tile).` : ""} A comparação usa as últimas passagens com até 10% de pixels encobertos ou inválidos no recorte.</p>
+            <p>Azul indica possível água por SCL/NDWI; não é uma mancha oficial de inundação. Resolução nativa de 10–20 m. Catálogo consultado em {date(pair.checked_at)}.</p>
+          </div>
+        </>}
+    </section>
   );
+}
+
+function CaseModal({ id, onClose }) {
+  const [caseData, setCaseData] = useState(null);
+  const [error, setError] = useState("");
+  const [view, setView] = useState("default");
+  useEffect(() => {
+    let active = true;
+    api(id === 'history-2023' ? '/historical/2023' : `/events/${id}`).then((value) => { if (active) setCaseData(value); })
+      .catch((e) => { if (active) setError(e.message); });
+    const closeOnEscape = (e) => { if (e.key === "Escape") onClose(); };
+    document.addEventListener("keydown", closeOnEscape);
+    return () => { active = false; document.removeEventListener("keydown", closeOnEscape); };
+  }, [id, onClose]);
+  const context = caseData?.snapshot?.historical_context;
+  return <div className="case-backdrop" onMouseDown={(e) => { if (e.target === e.currentTarget) onClose(); }}>
+    <div className="case-dialog" role="dialog" aria-modal="true" aria-labelledby="case-title">
+      <button className="case-close" onClick={onClose} aria-label="Fechar detalhes">×</button>
+      {error ? <p className="error">{error}</p> : !caseData ? <p>Carregando registro…</p> : <>
+        <span className="caps">{caseData.mode === "SIMULACAO" ? "CURIOSIDADE HISTÓRICA · COTAS SIMULADAS" : "EVENTO MONITORADO"}</span>
+        <h2 id="case-title">{context?.title || "Registro de evento"}</h2>
+        <p>{context?.summary || `${caseData.station_name} · ${date(caseData.started_at)}`}</p>
+        {caseData.mode === "SIMULACAO" && <p className="case-caution">A ocorrência foi documentada, mas as cotas deste replay são didáticas. As imagens mostram datas próximas, não o pico da enchente.</p>}
+        {caseData.scenes.BASELINE?.has_natural && caseData.scenes.POST_EVENT?.has_natural && <div className="segmented" aria-label="Visualização histórica">
+          <button className={view === "default" ? "active" : ""} onClick={() => setView("default")}>Água destacada</button>
+          <button className={view === "natural" ? "active" : ""} onClick={() => setView("natural")}>Cor natural</button>
+        </div>}
+        <div className="case-scenes">
+          {[["BASELINE", "Antes"], ["POST_EVENT", "Depois"]].map(([role, label]) => {
+            const scene = caseData.scenes[role];
+            return scene && <figure key={role}><a href={sceneUrl(scene, view)} target="_blank" rel="noreferrer"><img src={sceneUrl(scene, view)} alt={`${label}: rio e entorno em ${date(scene.acquired_at, { dateStyle: "medium" })}`} /></a><figcaption>{label} · {date(scene.acquired_at, { dateStyle: "medium" })}</figcaption></figure>;
+          })}
+        </div>
+        {context?.sources && <div className="case-sources">{context.sources.map((source) => <a key={source.url} href={source.url} target="_blank" rel="noreferrer">{source.title} ↗</a>)}</div>}
+      </>}
+    </div>
+  </div>;
+}
+
+function App() {
+  const { live, error: liveError } = useLiveStation();
+  const { pair, error: pairError } = useRecentSatellite();
+  const [realEvents, setRealEvents] = useState([]);
+  const [openCase, setOpenCase] = useState(null);
+  const [showAdmin, setShowAdmin] = useState(false);
+  useEffect(() => {
+    api('/events?mode=AO_VIVO').then((value) => setRealEvents(value.items)).catch(() => {});
+  }, []);
+  const closeCase = React.useCallback(() => setOpenCase(null), []);
+  return <>
+    <header className="site-header" id="inicio"><div className="container nav landing-nav">
+      <a className="brand" href="#inicio" aria-label="Voltar ao início"><span className="brand-icon"><Icon name="protection" size={25} /></span><span>MANCHA<span className="brand-slash">/</span>INUNDAÇÃO<small>PRESIDENTE GETÚLIO · SC</small></span></a>
+      <nav aria-label="Navegação principal"><a href="#monitoramento">Nível do rio</a><a href="#imagens">Imagens</a><a href="#historia">História</a><button className="nav-admin" onClick={() => { setShowAdmin((value) => !value); setTimeout(() => document.getElementById('admin')?.scrollIntoView({ behavior: 'smooth' }), 0); }}>Admin</button></nav>
+    </div></header>
+    <main>
+      <section className="landing-intro"><div className="container"><span className="caps">MONITORAMENTO FLUVIAL · ÁREA DE ESTUDO</span><h1>Rio dos Índios, Presidente Getúlio</h1><p>Veja o nível publicado pela Defesa Civil e compare as passagens de satélite mais recentes com o rio visível.</p></div></section>
+      <div className="container landing-content"><LiveStation live={live} error={liveError} station={live?.station} /><RecentCompare pair={pair} error={pairError} />
+        {realEvents.length > 0 && <section className="landing-events" id="eventos"><div className="landing-section-head"><div><span className="caps">REGISTROS</span><h2>Eventos monitorados</h2></div></div><div className="event-grid">{realEvents.slice(0, 3).map((event) => <EventCard key={event.id} item={event} open={setOpenCase} />)}</div></section>}
+        <section className="landing-history" id="historia"><div><span className="caps">CURIOSIDADE HISTÓRICA</span><h2>Enchente de novembro de 2023</h2><p>Um episódio documentado com imagens Sentinel-2 de antes e depois. Os níveis do replay são simulados.</p><button className="btn ghost" onClick={() => setOpenCase('history-2023')}>Ver história e imagens <Icon name="arrow" size={17} /></button></div><img src="/api/historical/2023/image/BASELINE?view=default" alt="Vista de Presidente Getúlio antes da enchente de 2023" /></section>
+        <section className="landing-method" id="sobre"><span className="caps">COMO LER O PAINEL</span><p>O nível vem da estação DCSC-00043 reproduzida pelo <a href="https://pdc.presidentegetulio.sc.gov.br/monitoramento" target="_blank" rel="noreferrer">portal municipal</a>. As imagens vêm do Copernicus. Diferenças visuais não confirmam uma inundação nem substituem alertas oficiais.</p></section>
+      </div>
+    </main>
+    {showAdmin && <section id="admin" className="landing-admin"><Admin open={setOpenCase} /></section>}
+    <footer><div className="container footer-inner"><div><strong>MANCHA/INUNDAÇÃO</strong><span>Presidente Getúlio · Santa Catarina</span></div><p>Projeto acadêmico de apoio à análise · Consulte a Defesa Civil para orientações oficiais.</p></div></footer>
+    {openCase && <CaseModal id={openCase} onClose={closeCase} />}
+  </>;
 }
 createRoot(document.getElementById("root")).render(<App />);

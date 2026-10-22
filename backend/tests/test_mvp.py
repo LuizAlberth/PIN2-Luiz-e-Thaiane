@@ -20,6 +20,7 @@ from app.adapters import verify_png
 import app.storage as storage
 from app.api import app
 from app.pdc import PDCClient, live_station
+from app import recent_satellite
 
 @pytest.fixture
 def db(tmp_path, monkeypatch):
@@ -314,5 +315,37 @@ def test_password_only_admin_login(db, monkeypatch):
             user.active = False
             session.commit()
             assert client.post('/api/auth/admin', json={'password':'senha-local-de-teste'}).status_code == 401
+    finally:
+        app.dependency_overrides.clear()
+
+def test_recent_pair_skips_cloudy_pass_and_preserves_two_dates(monkeypatch):
+    days = [(now() - timedelta(days=offset)).date().isoformat() for offset in (2, 7, 12)]
+    features = [{'id': f'S2A_MSIL2A_{day.replace("-", "")}T132251_R038_T22JFR_{day.replace("-", "")}T230000',
+        'properties': {'datetime': day + 'T13:30:00Z', 'eo:cloud_cover': cloud}}
+        for day, cloud in zip(days, [89.9, 3.0, 2.0])]
+    class FakeClient:
+        ready = True
+        def search(self, *_args, **_kwargs): return features
+    monkeypatch.setattr(recent_satellite, 'load_latest', lambda: None)
+    monkeypatch.setattr(recent_satellite, '_scene', lambda _client, feature: None if feature is features[0]
+        else {'product_id': feature['id'], 'acquired_at': feature['properties']['datetime'],
+            'cloud_percent': 0.0, 'tile': 'T22JFR', 'orbit': 'R038', 'images': {}})
+    saved = {}
+    monkeypatch.setattr(recent_satellite, 'put', lambda key, data, **_kwargs: saved.update({key: data}) or 'checksum')
+    pair = recent_satellite.refresh_latest(FakeClient())
+    assert [scene['acquired_at'][:10] for scene in pair['scenes']] == [days[2], days[1]]
+    assert pair['latest_pass']['acquired_at'][:10] == days[0]
+    assert json.loads(saved[recent_satellite.MANIFEST_KEY])['scenes'] == pair['scenes']
+
+def test_historical_pair_is_public_without_a_demo_event(db):
+    session, _ = db
+    app.dependency_overrides[api_session] = lambda: session
+    try:
+        with TestClient(app) as client:
+            metadata = client.get('/api/historical/2023')
+            assert metadata.status_code == 200
+            assert metadata.json()['scenes']['BASELINE']['acquired_at'][:10] == '2023-11-05'
+            image = client.get('/api/historical/2023/image/POST_EVENT?view=default')
+            assert image.status_code == 200 and image.content.startswith(b'\x89PNG')
     finally:
         app.dependency_overrides.clear()
