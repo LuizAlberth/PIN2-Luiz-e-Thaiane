@@ -81,6 +81,12 @@ const Icon = ({ name, size = 20 }) => {
         <path d="m9 12 2 2 4-4" />
       </>
     ),
+    protection: (
+      <>
+        <path d="M12 2 3 6v6c0 4.5 3.4 8 9 10 5.6-2 9-5.5 9-10V6l-9-4Z" />
+        <path d="m12 7 5 8H7l5-8Z" fill="currentColor" stroke="none" />
+      </>
+    ),
     image: (
       <>
         <rect x="3" y="3" width="18" height="18" rx="2" />
@@ -130,13 +136,36 @@ const Notice = ({ demo = false, replay = false }) => (
     <Icon name="info" size={18} />
     <span>
       {demo
-        ? "Demonstração: níveis e gatilho simulados, sem medições da ANA. Consulte a origem e a data de cada imagem. Diferenças visuais não confirmam uma inundação."
+        ? "Demonstração: níveis e gatilho simulados, sem medições da ANA ou da Defesa Civil. Consulte a origem e a data de cada imagem. Diferenças visuais não confirmam uma inundação."
         : replay
           ? "Esta área reúne replays históricos. Alguns usam leituras e cenas reais; os cenários didáticos são identificados em cada evento."
           : "Comparações visuais são evidências informativas. O sistema não emite alertas oficiais nem delimita a área exata de inundação."}
     </span>
   </div>
 );
+const OfficialStation = ({ station, demo }) =>
+  station && (
+    <section className="official-station" aria-labelledby="official-station-title">
+      <div className="official-station-icon" aria-hidden="true">
+        <Icon name="pin" size={25} />
+      </div>
+      <div className="official-station-copy">
+        <span className="caps">ESTAÇÃO OFICIAL DE REFERÊNCIA</span>
+        <h3 id="official-station-title">
+          {station.name} <span>{station.code}</span>
+        </h3>
+        <p>
+          {station.region} · Bacia {station.basin}. Consulte nível do rio e chuva
+          diretamente na Defesa Civil SC. {demo
+            ? "As cotas do cenário histórico abaixo são simuladas e não vêm desta estação."
+            : "As leituras oficiais atuais estão disponíveis no portal da Defesa Civil."}
+        </p>
+      </div>
+      <a href={station.url} target="_blank" rel="noopener noreferrer">
+        Ver leituras oficiais <Icon name="arrow" size={17} />
+      </a>
+    </section>
+  );
 const EventCard = ({ item, open }) => (
   <button className="event-card" onClick={() => open(item.id)}>
     <div className="event-top">
@@ -151,8 +180,14 @@ const EventCard = ({ item, open }) => (
         {names[item.status] || item.status}
       </Badge>
     </div>
+    {item.scenario_title && (
+      <span className="event-scenario">{item.scenario_title}</span>
+    )}
     <strong>{cm(item.trigger_level_cm)}</strong>
-    <small>Cota no gatilho · referência {cm(item.threshold_cm)}</small>
+    <small>
+      {item.mode === "SIMULACAO" ? "Cota simulada no gatilho" : "Cota no gatilho"}
+      {" · referência "}{cm(item.threshold_cm)}
+    </small>
     <div className="event-bottom">
       <span>
         <Icon name="pin" size={15} />
@@ -174,8 +209,11 @@ function Graph({ readings, threshold }) {
     lo = Math.min(...vals, threshold ?? Infinity) - 20,
     hi = Math.max(...vals, threshold ?? -Infinity) + 20,
     span = hi - lo || 1,
-    coords = pts.map((p, i) => [
-      24 + (i * 552) / (pts.length - 1),
+    startTime = new Date(pts[0].observed_at).getTime(),
+    timeSpan =
+      new Date(pts[pts.length - 1].observed_at).getTime() - startTime || 1,
+    coords = pts.map((p) => [
+      24 + ((new Date(p.observed_at).getTime() - startTime) * 552) / timeSpan,
       180 - ((p.water_level_cm - lo) / span) * 140,
     ]),
     path = coords
@@ -192,8 +230,8 @@ function Graph({ readings, threshold }) {
       >
         <defs>
           <linearGradient id="g" x2="0" y2="1">
-            <stop stopColor="#25878c" stopOpacity=".28" />
-            <stop offset="1" stopColor="#25878c" stopOpacity="0" />
+            <stop stopColor="#2365aa" stopOpacity=".28" />
+            <stop offset="1" stopColor="#2365aa" stopOpacity="0" />
           </linearGradient>
         </defs>
         {[40, 85, 130, 180].map((y) => (
@@ -228,7 +266,7 @@ function Graph({ readings, threshold }) {
         <path
           d={path}
           fill="none"
-          stroke="#21868c"
+          stroke="#2365aa"
           strokeWidth="3"
           strokeLinecap="round"
         />
@@ -239,7 +277,7 @@ function Graph({ readings, threshold }) {
             cy={y}
             r="3"
             fill="white"
-            stroke="#21868c"
+            stroke="#2365aa"
             strokeWidth="2"
           />
         ))}
@@ -263,6 +301,139 @@ function Graph({ readings, threshold }) {
         </span>
       </div>
     </>
+  );
+}
+function HeroScene({ event, open }) {
+  const [scene, setScene] = useState(null);
+  const [failed, setFailed] = useState(false);
+  useEffect(() => {
+    let active = true;
+    setScene(null);
+    setFailed(false);
+    if (event?.id) {
+      api(`/events/${event.id}`)
+        .then((detail) => {
+          if (active)
+            setScene(detail.scenes.BASELINE || detail.scenes.POST_EVENT);
+        })
+        .catch(() => active && setFailed(true));
+    }
+    return () => {
+      active = false;
+    };
+  }, [event?.id]);
+  return (
+    <div className={`hero-art ${scene && !failed ? "has-scene" : ""}`}>
+      {scene && !failed ? (
+        <img
+          className="hero-scene"
+          src={scene.image_url}
+          alt="Imagem de satélite da área piloto em Presidente Getúlio"
+          onError={() => setFailed(true)}
+        />
+      ) : (
+        <div className="hero-placeholder" aria-hidden="true">
+          <Icon name="protection" size={100} />
+        </div>
+      )}
+      <div className="art-topline">
+        <span className="art-tag">
+          <Icon name="pin" size={13} /> ÁREA PILOTO
+        </span>
+        <span>N ↑</span>
+      </div>
+      <div className="art-caption">
+        <span>PRESIDENTE GETÚLIO · SC</span>
+        <strong>Um olhar sobre o território.</strong>
+        <p>
+          {scene && !failed
+            ? `${scene.source === "CDSE" ? "Copernicus" : "Referência visual"} · ${date(scene.acquired_at, { dateStyle: "medium" })}`
+            : "Rios Krauel e dos Índios · área de estudo"}
+        </p>
+        {scene && !failed && (
+          <button className="art-open" onClick={() => open(event.id)}>
+            Abrir comparação <Icon name="arrow" size={16} />
+          </button>
+        )}
+      </div>
+    </div>
+  );
+}
+function SystemPurpose({ navigate, open, event, demo }) {
+  const actions = [
+    {
+      icon: "wave",
+      title: "Acompanhar os níveis",
+      description:
+        "Consulte a evolução das cotas, a referência de monitoramento e a situação dos dados.",
+      label: "Ver monitoramento",
+      action: () =>
+        document
+          .getElementById("monitoramento")
+          ?.scrollIntoView({ behavior: "smooth", block: "start" }),
+    },
+    {
+      icon: "layers",
+      title: "Comparar as imagens",
+      description:
+        "Observe o rio antes e depois do gatilho, lado a lado ou por sobreposição de cenas Sentinel.",
+      label: "Comparar imagens",
+      action: () => (event ? open(event.id) : navigate("events")),
+    },
+    {
+      icon: "shield",
+      title: "Consultar as evidências",
+      description:
+        "Explore eventos e confira as datas, a origem das imagens e os detalhes de cada registro.",
+      label: "Explorar histórico",
+      action: () => navigate("events"),
+    },
+  ];
+  return (
+    <section className="purpose" aria-labelledby="purpose-title">
+      <div className="purpose-intro">
+        <div className="purpose-icon" aria-hidden="true">
+          <Icon name="protection" size={27} />
+        </div>
+        <div>
+          <span className="caps">OBJETIVO DO SISTEMA</span>
+          <h2 id="purpose-title">
+            Informação para apoiar a análise de inundações.
+          </h2>
+          <p>
+            Reunir níveis dos rios e imagens de satélite de Presidente Getúlio
+            para acompanhar o cenário, comparar momentos e consultar evidências
+            em um só lugar.
+          </p>
+        </div>
+      </div>
+      <div className="purpose-grid">
+        {actions.map(({ icon, title, description, label, action }, index) => (
+          <article className="purpose-card" key={title}>
+            <div className="purpose-card-top">
+              <Icon name={icon} size={25} />
+              <span>0{index + 1}</span>
+            </div>
+            <h3>{title}</h3>
+            <p>{description}</p>
+            <button className="text-link" onClick={action}>
+              {label}
+              <Icon name="arrow" size={16} />
+            </button>
+          </article>
+        ))}
+      </div>
+      <div className="purpose-footnote">
+        <Icon name="info" size={16} />
+        <span>
+          {demo
+            ? "Modo demonstração: níveis e gatilho simulados. "
+            : "Projeto acadêmico de uso informativo. "}
+          O sistema não emite alertas oficiais nem substitui as orientações da
+          Defesa Civil.
+        </span>
+      </div>
+    </section>
   );
 }
 function Dashboard({ navigate, open }) {
@@ -304,45 +475,66 @@ function Dashboard({ navigate, open }) {
         <div className="container hero-grid">
           <div>
             <div className="eyebrow">
-              <i /> PROJETO PILOTO · PRESIDENTE GETÚLIO, SC
+              <i /> ANÁLISE DE INUNDAÇÕES · PROJETO ACADÊMICO
             </div>
             <h1>
-              Do nível do rio
-              <br />à <em>evidência visual.</em>
+              Dados do rio.
+              <br />
+              <em>Evidências à vista.</em>
             </h1>
             <p>
-              Um lugar para acompanhar leituras hidrométricas e entender o que
-              as imagens mostram antes e depois de um evento.
+              Acompanhe níveis, compare imagens de satélite e consulte o
+              histórico para entender o cenário dos rios em Presidente Getúlio.
             </p>
             <div className="hero-actions">
               <button
                 className="btn primary"
-                onClick={() => navigate("events")}
+                onClick={() =>
+                  data.recent_events.length
+                    ? open(data.recent_events[0].id)
+                    : navigate("events")
+                }
               >
-                Explorar eventos <Icon name="arrow" size={18} />
+                {data.recent_events.length
+                  ? "Ver comparação recente"
+                  : "Explorar eventos"}{" "}
+                <Icon name="arrow" size={18} />
               </button>
               <button className="btn ghost" onClick={() => navigate("about")}>
                 Como funciona
               </button>
             </div>
           </div>
-          <div className="hero-art" aria-hidden="true">
-            <span className="art-coord">27° S / RIO KRAUEL</span>
-            <div className="river r1" />
-            <div className="river r2" />
-            <div className="river r3" />
-            <span className="art-cross">+</span>
-            <span className="art-label">
-              ◉ &nbsp; ÁREA DE INTERESSE
-              <br />
-              <strong>PRESIDENTE GETÚLIO</strong>
-            </span>
-            <span className="art-scale">0 ━━━━━━━━━ 5 km</span>
-          </div>
+          <HeroScene event={data.recent_events[0]} open={open} />
         </div>
       </section>
       <main className="container content">
-        <div className="section-head">
+        <SystemPurpose
+          navigate={navigate}
+          open={open}
+          event={data.recent_events[0]}
+          demo={demo}
+        />
+        {data.recent_events[0]?.scenario_title && (
+          <section className="historical-callout">
+            <div>
+              <span className="caps">CASO HISTÓRICO DISPONÍVEL</span>
+              <h3>{data.recent_events[0].scenario_title}</h3>
+              <p>
+                Conheça o episódio de Presidente Getúlio, compare imagens reais
+                anteriores e posteriores e consulte as fontes oficiais. Os
+                níveis são simulados.
+              </p>
+            </div>
+            <button
+              className="btn outline"
+              onClick={() => open(data.recent_events[0].id)}
+            >
+              Abrir caso histórico <Icon name="arrow" size={17} />
+            </button>
+          </section>
+        )}
+        <div className="section-head" id="monitoramento">
           <div>
             <span className="caps">VISÃO GERAL</span>
             <h2>Situação do monitoramento</h2>
@@ -353,10 +545,11 @@ function Dashboard({ navigate, open }) {
           </span>
         </div>
         <Notice demo={demo} />
+        <OfficialStation station={data.official_station} demo={demo} />
         <div className="stats">
           <article className="stat important">
             <span>
-              <Icon name="wave" /> Última leitura válida
+              <Icon name="wave" /> {demo ? "Última cota simulada" : "Última leitura válida"}
             </span>
             <strong>{cm(r?.water_level_cm)}</strong>
             <small>
@@ -377,7 +570,7 @@ function Dashboard({ navigate, open }) {
           </article>
           <article className="stat">
             <span>
-              <Icon name="pin" /> Estação monitorada
+              <Icon name="pin" /> {demo ? "Estação do cenário" : "Estação monitorada"}
             </span>
             <strong className="station-number">{c?.station_code || "—"}</strong>
             <small>
@@ -394,7 +587,7 @@ function Dashboard({ navigate, open }) {
             <div className="section-head compact">
               <div>
                 <span className="caps">LEITURAS RECENTES</span>
-                <h3>Evolução da cota</h3>
+                <h3>{demo ? "Evolução simulada da cota" : "Evolução da cota"}</h3>
               </div>
               <span className="muted">{readings.length} medições</span>
             </div>
@@ -405,8 +598,10 @@ function Dashboard({ navigate, open }) {
             <h3>Uma leitura com contexto.</h3>
             <p>
               O gatilho acontece quando uma leitura válida passa de abaixo para
-              igual ou acima da cota registrada. Depois o sistema busca imagens
-              de radar comparáveis.
+              igual ou acima da cota registrada.{" "}
+              {demo
+                ? "Nesta demonstração, os níveis são simulados e a comparação usa imagens reais do Sentinel-2."
+                : "Depois o sistema busca cenas de radar Sentinel-1 comparáveis."}
             </p>
             <div>
               <Icon name="shield" /> Origem e qualidade preservadas
@@ -528,7 +723,12 @@ function SceneCard({ scene, label, view }) {
       {scene ? (
         <>
           <div className="scene-img">
-            <a href={sceneUrl(scene, view)} target="_blank" rel="noreferrer" title="Abrir imagem em tamanho completo">
+            <a
+              href={sceneUrl(scene, view)}
+              target="_blank"
+              rel="noreferrer"
+              title="Abrir imagem em tamanho completo"
+            >
               <img
                 src={sceneUrl(scene, view)}
                 alt={`${optical ? "Sentinel-2 · rios Krauel e dos Índios" : "Cena"} · ${label.toLowerCase()}`}
@@ -538,7 +738,9 @@ function SceneCard({ scene, label, view }) {
           <div className="scene-body">
             <strong>{date(scene.acquired_at)}</strong>
             <span>
-              {scene.source === "CDSE" ? `Copernicus · ${optical ? "Sentinel-2 L2A" : "Sentinel-1 GRD"}` : "Ilustração legada · inicie uma nova demonstração"}
+              {scene.source === "CDSE"
+                ? `Copernicus · ${optical ? "Sentinel-2 L2A" : "Sentinel-1 GRD"}`
+                : "Ilustração legada · inicie uma nova demonstração"}
             </span>
             <small>{scene.provider_product_id}</small>
             <div className="scene-tags">
@@ -548,7 +750,12 @@ function SceneCard({ scene, label, view }) {
               <span>v{scene.version}</span>
             </div>
             <small>{scene.selection_reason}</small>
-            <a href={sceneUrl(scene, view)} target="_blank" rel="noreferrer">Ampliar imagem ↗</a>
+            {scene.local_cloud_percent != null && (
+              <small>Nuvens na área: {scene.local_cloud_percent}%</small>
+            )}
+            <a href={sceneUrl(scene, view)} target="_blank" rel="noreferrer">
+              Ampliar imagem ↗
+            </a>
           </div>
         </>
       ) : (
@@ -562,6 +769,49 @@ function SceneCard({ scene, label, view }) {
         </div>
       )}
     </article>
+  );
+}
+function HistoricalContext({ context }) {
+  return (
+    <section className="historical-context" aria-labelledby="history-title">
+      <span className="caps">
+        OCORRÊNCIA REAL · REPLAY COM NÍVEIS SIMULADOS
+      </span>
+      <h2 id="history-title">{context.title}</h2>
+      <p>{context.summary}</p>
+      <div className="historical-timeline">
+        {context.timeline.map((item) => (
+          <article className={`history-step ${item.kind}`} key={item.date}>
+            <span>
+              {date(item.date + "T12:00:00Z", { dateStyle: "medium" })}
+              {item.end
+                ? ` a ${date(item.end + "T12:00:00Z", { dateStyle: "medium" })}`
+                : ""}
+            </span>
+            <h3>{item.title}</h3>
+            <p>{item.detail}</p>
+          </article>
+        ))}
+      </div>
+      <p>{context.imagery_note}</p>
+      <p className="history-cloud-note">
+        <Icon name="info" size={17} />
+        {context.cloud_note}
+      </p>
+      <div className="history-sources">
+        Fontes oficiais:{" "}
+        {context.sources.map((source) => (
+          <a
+            key={source.url}
+            href={source.url}
+            target="_blank"
+            rel="noreferrer"
+          >
+            {source.title} ↗
+          </a>
+        ))}
+      </div>
+    </section>
   );
 }
 function Detail({ id, navigate }) {
@@ -600,7 +850,8 @@ function Detail({ id, navigate }) {
   let b = data.scenes.BASELINE,
     a = data.scenes.POST_EVENT,
     demo = data.source_mode === "DEMO",
-    replay = data.mode === "SIMULACAO" && !demo;
+    replay = data.mode === "SIMULACAO" && !demo,
+    history = data.snapshot.historical_context;
   return (
     <main className="container section">
       <button className="back" onClick={() => navigate("events")}>
@@ -609,7 +860,8 @@ function Detail({ id, navigate }) {
       <div className="detail-head">
         <div>
           <span className="caps">
-            REGISTRO DE EVENTO · {data.mode === "SIMULACAO" ? "SIMULAÇÃO" : "MONITORAMENTO REAL"}
+            REGISTRO DE EVENTO ·{" "}
+            {data.mode === "SIMULACAO" ? "SIMULAÇÃO" : "MONITORAMENTO REAL"}
           </span>
           <h1>Comparação de evidências</h1>
           <p>
@@ -621,6 +873,7 @@ function Detail({ id, navigate }) {
         </Badge>
       </div>
       <Notice demo={demo} replay={replay} />
+      {history && <HistoricalContext context={history} />}
       <div className="detail-stats">
         {[
           ["COTA NO GATILHO", cm(data.trigger_level_cm)],
@@ -662,11 +915,30 @@ function Detail({ id, navigate }) {
       {b?.has_natural && a?.has_natural && (
         <div className="water-controls">
           <div className="segmented" aria-label="Visualização do Sentinel-2">
-            <button className={view === "default" ? "active" : ""} onClick={() => setView("default")}>Água destacada</button>
-            <button className={view === "natural" ? "active" : ""} onClick={() => setView("natural")}>Cor natural</button>
+            <button
+              className={view === "default" ? "active" : ""}
+              onClick={() => setView("default")}
+            >
+              Água destacada
+            </button>
+            <button
+              className={view === "natural" ? "active" : ""}
+              onClick={() => setView("natural")}
+            >
+              Cor natural
+            </button>
           </div>
-          <p><span className="water-swatch" /> Azul: possível água detectada por NDWI/SCL, incluindo rios e lagoas. Resolução nativa de 10–20 m; pode omitir trechos estreitos ou classificar outros alvos. Norte ↑ · recorte de cerca de 2,2 km.</p>
-          <p>Imagens reais de Presidente Getúlio. O gatilho de 06/08/2024 e os níveis são simulados; este par demonstra a comparação e não comprova uma cheia histórica.</p>
+          <p>
+            <span className="water-swatch" /> Azul: possível água detectada por
+            NDWI/SCL, incluindo rios e lagoas. Resolução nativa de 10–20 m; pode
+            omitir trechos estreitos ou classificar outros alvos. Norte ↑ ·
+            recorte de cerca de 2,2 km.
+          </p>
+          <p>
+            Imagens reais de Presidente Getúlio. Os níveis e o gatilho são
+            simulados; as datas das cenas não representam uma captura do pico da
+            enchente.
+          </p>
         </div>
       )}
       {overlay && b && a ? (
@@ -696,8 +968,16 @@ function Detail({ id, navigate }) {
         </div>
       ) : (
         <div className="scene-grid">
-          <SceneCard scene={b} label="Antes do gatilho" view={view} />
-          <SceneCard scene={a} label="Depois do gatilho" view={view} />
+          <SceneCard
+            scene={b}
+            label={b?.label || "Antes do gatilho"}
+            view={view}
+          />
+          <SceneCard
+            scene={a}
+            label={a?.label || "Depois do gatilho"}
+            view={view}
+          />
         </div>
       )}
       {data.status === "PARCIAL" && (
@@ -749,8 +1029,9 @@ function Detail({ id, navigate }) {
           <h3>O que esta comparação permite?</h3>
           <p>
             Observe diferenças visuais entre cenas da mesma área. A imagem de
-            satélite depende de resolução, nuvens, órbita e processamento. Uma diferença visual, por
-            si só, não confirma nem delimita uma inundação.
+            satélite depende de resolução, nuvens, órbita e processamento. Uma
+            diferença visual, por si só, não confirma nem delimita uma
+            inundação.
           </p>
           <div>
             <Icon name="shield" /> Uso informativo e acadêmico
@@ -809,10 +1090,11 @@ function About() {
       <article className="panel about-panel">
         <h3>O que significa “simulação”?</h3>
         <p>
-          O modo de demonstração usa níveis e gatilho simulados com imagens reais
-          do Sentinel-2, obtidas no Copernicus e salvas com datas e produtos de origem.
-          É possível comparar cor natural e destaque espectral da água. O modo real exige
-          credenciais e uma cota com fonte oficial.
+          O modo de demonstração usa níveis e gatilho simulados com imagens
+          reais do Sentinel-2, obtidas no Copernicus e salvas com datas e
+          produtos de origem. É possível comparar cor natural e destaque
+          espectral da água. O modo real exige credenciais e uma cota com fonte
+          oficial.
         </p>
       </article>
     </main>
@@ -820,7 +1102,6 @@ function About() {
 }
 function Admin({ open }) {
   const [token, setToken] = useState(sessionStorage.getItem("pin2_token")),
-    [email, setEmail] = useState(""),
     [password, setPassword] = useState(""),
     [tab, setTab] = useState("overview"),
     [busy, setBusy] = useState(false),
@@ -858,7 +1139,13 @@ function Admin({ open }) {
       .then(([configs, events, jobs, audit, integrations]) =>
         setModel({ configs, events, jobs, audit, integrations }),
       )
-      .catch((e) => setMessage(`Erro: ${e.message}`));
+      .catch((e) => {
+        if (/Sessão|Autenticação|Credenciais/.test(e.message)) {
+          sessionStorage.removeItem("pin2_token");
+          setToken(null);
+        }
+        setMessage(`Erro: ${e.message}`);
+      });
   useEffect(() => {
     if (token) refresh();
   }, [token]);
@@ -877,9 +1164,9 @@ function Admin({ open }) {
   function login(e) {
     e.preventDefault();
     perform(async () => {
-      let result = await api("/auth/login", {
+      let result = await api("/auth/admin", {
         method: "POST",
-        body: JSON.stringify({ email, password }),
+        body: JSON.stringify({ password }),
       });
       sessionStorage.setItem("pin2_token", result.token);
       setToken(result.token);
@@ -951,21 +1238,15 @@ function Admin({ open }) {
             <Icon name="lock" />
           </div>
           <h2>Entrar</h2>
-          <label>
-            E-mail
-            <input
-              type="email"
-              required
-              autoComplete="username"
-              value={email}
-              onChange={(e) => setEmail(e.target.value)}
-            />
-          </label>
+          <p className="login-hint">
+            Informe sua senha individual para acessar a administração.
+          </p>
           <label>
             Senha
             <input
               type="password"
               required
+              autoFocus
               autoComplete="current-password"
               value={password}
               onChange={(e) => setPassword(e.target.value)}
@@ -975,7 +1256,10 @@ function Admin({ open }) {
             Acessar painel <Icon name="arrow" size={18} />
           </button>
           {message && (
-            <p role="status" className="form-msg">
+            <p
+              role="status"
+              className={`form-msg ${message.startsWith("Erro:") ? "error" : ""}`}
+            >
               {message}
             </p>
           )}
@@ -1080,11 +1364,11 @@ function Admin({ open }) {
           <div className="panel demo-box">
             <div>
               <span className="caps">DEMONSTRAÇÃO REPRODUZÍVEL</span>
-              <h3>Teste o fluxo completo</h3>
+              <h3>Enchentes de novembro de 2023</h3>
               <p>
-                Usa níveis simulados e duas cenas reais do Sentinel-2 nos rios
-                Krauel e dos Índios. As imagens já estão salvas para apresentar
-                sem conexão externa. Nenhum acesso ANA é necessário.
+                Simula o episódio documentado de 16 e 17/11/2023, com cenas
+                reais de 05/11 e 15/12. Os níveis são fictícios e as imagens
+                mostram referências de antes e depois, fora do pico da enchente.
               </p>
             </div>
             <button
@@ -1425,11 +1709,11 @@ function App() {
             aria-label="Ir ao painel"
           >
             <span className="brand-icon">
-              <Icon name="wave" size={25} />
+              <Icon name="protection" size={25} />
             </span>
             <span>
               MANCHA<span className="brand-slash">/</span>INUNDAÇÃO
-              <small>PROJETO PILOTO · SC</small>
+              <small>PROJETO ACADÊMICO · SC</small>
             </span>
           </button>
           <nav aria-label="Navegação principal">

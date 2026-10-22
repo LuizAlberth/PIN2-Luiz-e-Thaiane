@@ -88,8 +88,7 @@ def main():
             status, _, javascript = request("/src/main.jsx")
             assert status == 200 and b"createRoot" in javascript
 
-            status, login = json_request("/api/auth/login", body={"email": env["ADMIN_EMAIL"],
-                "password": env["ADMIN_PASSWORD"]})
+            status, login = json_request("/api/auth/admin", body={"password": env["ADMIN_PASSWORD"]})
             assert status == 200 and login["token"]
             token = login["token"]
             status, created = json_request("/api/admin/demo", body={}, token=token)

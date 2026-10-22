@@ -14,6 +14,7 @@ from .security import hash_password, verify_password, sign, current_admin
 from .service import active_config, create_config, demo_config, demo_replay, ingest, reprocess, displayed_scenes, enqueue_collection, has_recent_valid_level, PUBLIC, utc, work_once
 from .adapters import ANAClient, CDSEClient, ProviderError, parsed_time
 from .storage import get
+from .station_reference import OFFICIAL_STATION
 
 @asynccontextmanager
 async def lifespan(app):
@@ -26,10 +27,14 @@ async def lifespan(app):
         raise RuntimeError('APP_SECRET deve ter ao menos 32 caracteres')
     from .db import SessionLocal
     with SessionLocal() as db:
-        if email and password and not db.scalar(select(User).where(User.email == email)):
-            if len(password) < 12:
-                raise RuntimeError('ADMIN_PASSWORD deve ter ao menos 12 caracteres')
-            db.add(User(email=email, display_name='Administrador', password_hash=hash_password(password)))
+        if email and password:
+            if len(password) < 4:
+                raise RuntimeError('ADMIN_PASSWORD deve ter ao menos 4 caracteres')
+            user = db.scalar(select(User).where(User.email == email))
+            if not user:
+                db.add(User(email=email, display_name='Administrador', password_hash=hash_password(password)))
+            elif not verify_password(password, user.password_hash):
+                user.password_hash = hash_password(password)
             db.commit()
     yield
 
@@ -42,6 +47,9 @@ app.add_middleware(CORSMiddleware,
 class Login(BaseModel):
     email: str
     password: str
+
+class PasswordLogin(BaseModel):
+    password: str = Field(min_length=1, max_length=256)
 
 class ConfigIn(BaseModel):
     station_code: str = Field(min_length=5, max_length=30)
@@ -86,6 +94,7 @@ def event_json(db, e, detailed=False):
         'station_name': e.snapshot['station_name'], 'station_code': e.snapshot['station_code'],
         'threshold_cm': e.snapshot['threshold_cm'], 'config_version': e.snapshot['config_version'],
         'source_mode': e.snapshot['source_mode'],
+        'scenario_title': e.snapshot.get('historical_context', {}).get('title'),
         'has_comparison': e.status in PUBLIC, 'failure_summary': e.failure_summary}
     if detailed:
         before, after = displayed_scenes(db, e.id)
@@ -100,6 +109,8 @@ def event_json(db, e, detailed=False):
                 'collection': s.metadata_json.get('collection', 'sentinel-1-grd'),
                 'visualization': s.metadata_json.get('visualization'),
                 'has_natural': bool(s.metadata_json.get('natural_key')),
+                'label': s.metadata_json.get('label'),
+                'local_cloud_percent': s.metadata_json.get('local_cloud_percent'),
                 'image_url': f'/api/events/{e.id}/scene/{s.role}?version={s.version}'}
         result.update(snapshot=e.snapshot, scenes={'BASELINE': scene_json(before), 'POST_EVENT': scene_json(after)},
             trigger_reading=reading_json(db.get(Reading, e.trigger_reading_id)),
@@ -136,11 +147,20 @@ def login(payload: Login, db: Session = Depends(session)):
 def me(user: User = Depends(current_admin)):
     return {'email': user.email, 'display_name': user.display_name}
 
+@app.post('/api/auth/admin')
+def password_login(payload: PasswordLogin, db: Session = Depends(session)):
+    email = os.getenv('ADMIN_EMAIL', '').strip().lower()
+    user = db.scalar(select(User).where(User.email == email)) if email else None
+    if not user or not user.active or user.role != 'ADMIN' or not verify_password(payload.password, user.password_hash):
+        raise HTTPException(401, 'Senha inválida')
+    return {'token': sign(user.id), 'user': {'email': user.email, 'display_name': user.display_name}}
+
 @app.get('/api/status')
 def status(db: Session = Depends(session)):
     c = active_config(db)
     if not c:
-        return {'config': None, 'reading': None, 'data_status': 'INDISPONIVEL', 'updated_at': iso(now()), 'recent_events': []}
+        return {'config': None, 'reading': None, 'data_status': 'INDISPONIVEL',
+            'official_station': OFFICIAL_STATION, 'updated_at': iso(now()), 'recent_events': []}
     mode = 'SIMULACAO' if c.source_mode == 'DEMO' else 'AO_VIVO'
     reading = db.scalar(select(Reading).where(Reading.station_code == c.station_code, Reading.mode == mode,
         Reading.quality_status == 'VALIDA').order_by(Reading.observed_at.desc()).limit(1))
@@ -157,7 +177,8 @@ def status(db: Session = Depends(session)):
         'FALHA' if collection and collection.status == 'FALHOU' else
         'AGUARDANDO_DADOS' if not reading else 'DISPONIVEL')
     return {'config': config_json(c), 'reading': reading_json(reading), 'data_status': state,
-        'integration_status': integration_status, 'updated_at': iso(now()),
+        'integration_status': integration_status, 'official_station': OFFICIAL_STATION,
+        'updated_at': iso(now()),
         'recent_events': [event_json(db, e) for e in events]}
 
 @app.get('/api/events')

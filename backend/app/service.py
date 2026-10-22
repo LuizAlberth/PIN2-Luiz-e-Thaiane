@@ -5,7 +5,7 @@ from sqlalchemy import select, update, func, or_
 from sqlalchemy.orm import Session
 from .models import Config, Reading, Event, Job, Scene, Attempt, Audit, now
 from .adapters import ANAClient, CDSEClient, ProviderError, parsed_time, verify_png
-from .satellite_demo import BBOX as DEMO_BBOX, TRIGGER as DEMO_TRIGGER, load_pair
+from .satellite_demo import BBOX as DEMO_BBOX, TRIGGER as DEMO_TRIGGER, HISTORICAL_CONTEXT, load_pair
 from .storage import put
 import logging
 import time
@@ -100,7 +100,7 @@ def demo_config(db, actor_id):
         bbox=DEMO_BBOX, threshold_cm=300,
         threshold_source='Valor simulado; não é cota oficial ANA', threshold_valid_from=DEMO_TRIGGER - timedelta(days=60),
         threshold_responsible='Sistema de demonstração', collection_interval_min=30,
-        baseline_min_days=15, baseline_max_days=30, post_window_days=15,
+        baseline_min_days=7, baseline_max_days=30, post_window_days=30,
         source_mode='DEMO', active=not keep_live, valid_from=instant, created_by=actor_id)
     db.add(config)
     db.flush()
@@ -166,12 +166,17 @@ def demo_replay(db, config):
     existing = db.scalars(select(Event).where(Event.config_id == config.id, Event.mode == 'SIMULACAO')).all()
     if existing:
         return {'inserted': 0, 'events_created': [e.id for e in existing]}
-    # The simulated trigger stays between the actual acquisition dates.
-    start = DEMO_TRIGGER - timedelta(minutes=90)
-    levels = [225, 260, 295, 308, 355, 378, 322, 289, 270]
-    readings = [{'observed_at': start + timedelta(minutes=30*i), 'level_cm': level,
-        'quality': 'VALIDA', 'raw': {'origem': 'cenário didático', 'ficticio': True}} for i, level in enumerate(levels)]
-    return ingest(db, config, readings, 'SIMULACAO')
+    # Fictional levels follow the documented episode; they are never ANA readings.
+    offsets = [-27, -9, -3, 0, 6, 18, 45, 69, 93, 699]
+    levels = [225, 260, 295, 308, 355, 378, 322, 289, 270, 235]
+    readings = [{'observed_at': DEMO_TRIGGER + timedelta(hours=offset), 'level_cm': level,
+        'quality': 'VALIDA', 'raw': {'origem': 'cenário didático', 'ficticio': True}} for offset, level in zip(offsets, levels)]
+    result = ingest(db, config, readings, 'SIMULACAO')
+    for event_id in result['events_created']:
+        event = db.get(Event, event_id)
+        event.snapshot = {**event.snapshot, 'historical_context': HISTORICAL_CONTEXT}
+    db.commit()
+    return result
 
 def enqueue_collection(db, config):
     # A failed collection stays failed until an administrator explicitly requests a new attempt.
@@ -283,7 +288,7 @@ def run_job(db, job, ana=None, cdse=None):
                 provider_product_id=candidate['id'], acquired_at=candidate['acquired_at'],
                 instrument_mode=candidate['instrument_mode'], orbit_direction=candidate['orbit_direction'],
                 relative_orbit=candidate['relative_orbit'], polarization=candidate['polarization'],
-                selection_reason='Mais recente na janela anterior' if role == 'BASELINE' else 'Primeira cena compatível após o gatilho',
+                selection_reason=(HISTORICAL_CONTEXT['labels'][role] + '; cena clara, fora do pico da enchente') if config.source_mode == 'DEMO' else ('Mais recente na janela anterior' if role == 'BASELINE' else 'Primeira cena compatível após o gatilho'),
                 source=provider, image_key=key, checksum_sha256=checksum, width=width, height=height,
                 metadata_json={**candidate['raw'], **extra, 'coverage_percent': candidate.get('coverage_percent', 100.0)})
             db.add(scene)

@@ -62,6 +62,8 @@ def test_demo_pair_is_published_with_integrity_and_reprocessing(db):
     assert work_once(session) and work_once(session)
     event=session.get(Event,event_id)
     assert event.status=='DISPONIVEL' and event.mode=='SIMULACAO'
+    assert event.snapshot['historical_context']['event_start']=='2023-11-16'
+    assert 'não certifica normalidade' in event.snapshot['historical_context']['imagery_note']
     scenes=session.scalars(select(Scene).where(Scene.event_id==event_id)).all()
     assert {s.role for s in scenes}=={'BASELINE','POST_EVENT'}
     for scene in scenes:
@@ -178,10 +180,11 @@ def test_empty_radar_image_is_not_published():
 def test_real_demo_pair_dates_provenance_and_water_highlight():
     pair = load_pair()
     before, after = pair['BASELINE'][0], pair['POST_EVENT'][0]
-    assert TRIGGER-timedelta(days=30) <= before['acquired_at'] <= TRIGGER-timedelta(days=15)
-    assert TRIGGER < after['acquired_at'] <= TRIGGER+timedelta(days=15)
+    assert TRIGGER-timedelta(days=30) <= before['acquired_at'] <= TRIGGER-timedelta(days=7)
+    assert TRIGGER < after['acquired_at'] <= TRIGGER+timedelta(days=30)
     assert before['id'] != after['id']
     for candidate, views in pair.values():
+        assert candidate['raw']['local_cloud_percent'] == 0
         assert candidate['raw']['bbox'] == BBOX
         processed = {t['productId'].removesuffix('.SAFE') for t in candidate['raw']['processing']['tiles']}
         assert processed == {candidate['id'].removesuffix('.SAFE')}
@@ -245,11 +248,19 @@ def test_public_access_control_and_demo_api(db):
     app.dependency_overrides[api_session]=lambda: session
     try:
         with TestClient(app) as client:
+            official = client.get('/api/status').json()
+            assert official['official_station']['code'] == 'DCSC-00043'
+            assert official['official_station']['url'].endswith('/estacao/DCSC-00043')
+            assert official['reading'] is None
             assert client.post('/api/admin/demo').status_code==401
             assert client.post('/api/auth/login',json={'email':user.email,'password':'wrong'}).status_code==401
             token=client.post('/api/auth/login',json={'email':user.email,'password':'senha-de-teste-segura'}).json()['token']
             headers={'Authorization':f'Bearer {token}'}
             created=client.post('/api/admin/demo',headers=headers).json()
+            active = client.get('/api/status').json()
+            assert active['official_station']['code'] == 'DCSC-00043'
+            assert active['config']['station_code'].startswith('DEMO-')
+            assert active['reading']['mode'] == 'SIMULACAO'
             event_id=created['replay']['events_created'][0]
             assert client.get(f'/api/events/{event_id}').status_code==404
             assert client.get(f'/api/events/{event_id}',headers=headers).status_code==200
@@ -265,5 +276,23 @@ def test_public_access_control_and_demo_api(db):
             scene=session.scalar(select(Scene).where(Scene.event_id==event_id,Scene.role=='BASELINE'))
             (storage.LOCAL_DIR/scene.image_key).write_bytes(b'corrompido')
             assert client.get(f'/api/events/{event_id}/scene/BASELINE').status_code==503
+    finally:
+        app.dependency_overrides.clear()
+
+def test_password_only_admin_login(db, monkeypatch):
+    session, user = db
+    monkeypatch.setenv('ADMIN_EMAIL', user.email)
+    user.password_hash = hash_password('senha-local-de-teste')
+    session.commit()
+    app.dependency_overrides[api_session] = lambda: session
+    try:
+        with TestClient(app) as client:
+            assert client.post('/api/auth/admin', json={'password':'wrong'}).status_code == 401
+            result = client.post('/api/auth/admin', json={'password':'senha-local-de-teste'})
+            assert result.status_code == 200
+            assert client.get('/api/auth/me', headers={'Authorization':'Bearer '+result.json()['token']}).status_code == 200
+            user.active = False
+            session.commit()
+            assert client.post('/api/auth/admin', json={'password':'senha-local-de-teste'}).status_code == 401
     finally:
         app.dependency_overrides.clear()
