@@ -569,8 +569,8 @@ function sceneUrl(scene, view) {
   return `${scene.image_url}${scene.image_url.includes("?") ? "&" : "?"}view=${view}`;
 }
 function DownloadLinks({ url, name }) {
-  return <div className="image-downloads"><span>Baixar PNG:</span>{[2, 4].map((scale) =>
-    <a key={scale} href={`${url}${url.includes('?') ? '&' : '?'}scale=${scale}`} download={`${name}-${scale}x.png`}>{scale}×</a>)}
+  return <div className="image-downloads"><span>Baixar PNG:</span>{[1, 2, 4].map((scale) =>
+    <a key={scale} href={`${url}${url.includes('?') ? '&' : '?'}scale=${scale}`} download={`${name}-${scale}x.png`}>{scale === 1 ? 'Original' : `${scale}×`}</a>)}
   </div>;
 }
 function SceneCard({ scene, label, view }) {
@@ -1629,38 +1629,62 @@ function RecentCompare({ pair, error }) {
 function PeriodSearch() {
   const [start, setStart] = useState('');
   const [end, setEnd] = useState('');
+  const [lat, setLat] = useState('');
+  const [lon, setLon] = useState('');
   const [results, setResults] = useState(null);
-  const [selected, setSelected] = useState(null);
+  const [selected, setSelected] = useState([]);
   const [loading, setLoading] = useState(false);
   const [message, setMessage] = useState('');
   const [view, setView] = useState('default');
-  const [previewAvailable, setPreviewAvailable] = useState(null);
+  const [searchedCoords, setSearchedCoords] = useState('');
   async function submit(event) {
     event.preventDefault();
-    setLoading(true); setMessage(''); setResults(null); setSelected(null); setPreviewAvailable(null);
+    setLoading(true); setMessage(''); setResults(null); setSelected([]);
     try {
-      const data = await api(`/satellite/search?start=${start}&end=${end}`);
+      const coords = lat !== '' || lon !== '' ? `&lat=${encodeURIComponent(lat)}&lon=${encodeURIComponent(lon)}` : '';
+      const data = await api(`/satellite/search?start=${start}&end=${end}${coords}`);
       setResults(data);
+      setSearchedCoords(coords);
       if (!data.scenes.length) setMessage('Nenhuma passagem encontrada neste período ou até 15 dias ao redor.');
     } catch (error) { setMessage(error.message); }
     finally { setLoading(false); }
   }
-  const preview = selected && `/api/satellite/search/preview/${encodeURIComponent(selected.product_id)}?view=${view}`;
+  function toggle(scene) {
+    setSelected((current) => current.some((item) => item.product_id === scene.product_id)
+      ? current.filter((item) => item.product_id !== scene.product_id)
+      : [...current.slice(-1), scene]);
+  }
+  const locationQuery = searchedCoords;
   return <section className="period-search" aria-labelledby="period-title">
-    <div className="landing-section-head"><div><span className="caps">ACERVO COPERNICUS</span><h2 id="period-title">Buscar outras datas</h2><p>Informe um período de até 60 dias. A busca inclui passagens até 15 dias antes e depois.</p></div></div>
+    <div className="landing-section-head"><div><span className="caps">ACERVO COPERNICUS</span><h2 id="period-title">Comparar datas e coordenadas</h2><p>Informe um período de até 60 dias e selecione duas passagens. As coordenadas são opcionais; vazias, usam a área piloto da estação.</p></div></div>
     <form className="period-form" onSubmit={submit}>
       <label>De<input type="date" value={start} max={new Date().toISOString().slice(0,10)} required onChange={(e) => setStart(e.target.value)} /></label>
       <label>Até<input type="date" value={end} max={new Date().toISOString().slice(0,10)} required onChange={(e) => setEnd(e.target.value)} /></label>
+      <label>Latitude<input type="number" step="any" min="-56" max="83" value={lat} placeholder="-27.038" onChange={(e) => setLat(e.target.value)} /></label>
+      <label>Longitude<input type="number" step="any" min="-179.98" max="179.98" value={lon} placeholder="-49.621" onChange={(e) => setLon(e.target.value)} /></label>
       <button className="btn primary" disabled={loading}>{loading ? 'Consultando…' : 'Buscar passagens'}</button>
     </form>
     {message && <p className="data-message" role="status">{message}</p>}
-    {results && <><p className="search-note">{results.scenes.length} datas encontradas. A porcentagem de nuvens é do tile inteiro; abra uma prévia para verificar o rio no recorte.</p>
-      <div className="search-results">{results.scenes.map((scene) => <button key={scene.product_id} className={selected?.product_id === scene.product_id ? 'selected' : ''} onClick={() => {setSelected(scene); setMessage(''); setView('default'); setPreviewAvailable(null);}}>
+    {results && <><p className="search-note">{results.scenes.length} datas encontradas. Selecione duas. Centro do recorte: {((results.bbox[1] + results.bbox[3]) / 2).toFixed(5)}, {((results.bbox[0] + results.bbox[2]) / 2).toFixed(5)}. A porcentagem de nuvens abaixo é do tile inteiro; cada imagem é verificada no recorte antes de abrir.</p>
+      <div className="search-results">{results.scenes.map((scene) => <button type="button" key={scene.product_id} aria-pressed={selected.some((item) => item.product_id === scene.product_id)} className={selected.some((item) => item.product_id === scene.product_id) ? 'selected' : ''} onClick={() => toggle(scene)}>
         <strong>{date(scene.acquired_at, {dateStyle:'medium'})}</strong><span>{scene.in_period ? 'No período' : `${scene.distance_days} dia(s) do período`}</span><small>{scene.tile_cloud_percent == null ? 'Nuvens não informadas' : `${scene.tile_cloud_percent}% nuvens no tile`}</small>
       </button>)}</div>
-      {selected && <div className={`search-preview ${previewAvailable === false ? 'unavailable' : ''}`}><div><strong>Prévia de {date(selected.acquired_at, {dateStyle:'medium'})}</strong><div className="segmented"><button className={view === 'default' ? 'active' : ''} onClick={() => {setView('default'); setPreviewAvailable(null);}}>Água destacada</button><button className={view === 'natural' ? 'active' : ''} onClick={() => {setView('natural'); setPreviewAvailable(null);}}>Cor natural</button></div></div><p>O sistema só mostra a imagem se o rio estiver visível e até 10% do recorte e do corredor estiver encoberto.</p><a href={preview} target="_blank" rel="noreferrer"><img key={preview} src={preview} alt={`Rio dos Índios em ${date(selected.acquired_at, {dateStyle:'medium'})}`} onError={() => setPreviewAvailable(false)} onLoad={() => setPreviewAvailable(true)} /></a><small className="preview-unavailable">Prévia indisponível: cena encoberta ou rio sem visibilidade neste recorte. Escolha outra data.</small>{previewAvailable && <><DownloadLinks url={preview} name={`rio-dos-indios-${selected.acquired_at.slice(0,10)}`} /><small>Ampliação por interpolação; sem novos detalhes do sensor.</small></>}<small>Produto: {selected.product_id}</small></div>}
+      {selected.length > 0 && <><div className="segmented search-view" aria-label="Visualização das imagens"><button className={view === 'default' ? 'active' : ''} onClick={() => setView('default')}>Água destacada</button><button className={view === 'natural' ? 'active' : ''} onClick={() => setView('natural')}>Cor natural</button></div><div className="search-comparison">{[...selected].sort((a, b) => a.acquired_at.localeCompare(b.acquired_at)).map((scene) => <SearchImage key={`${scene.product_id}-${view}`} scene={scene} view={view} locationQuery={locationQuery} bbox={results.bbox} />)}</div><p className="upscale-note">PNG original para relatório; 2×/4× apenas interpolam pixels. A comparação visual não comprova inundação.</p></>}
     </>}
   </section>;
+}
+
+function SearchImage({ scene, view, locationQuery, bbox }) {
+  const [available, setAvailable] = useState(null);
+  const preview = `/api/satellite/search/preview/${encodeURIComponent(scene.product_id)}?view=${view}${locationQuery}`;
+  const filename = `sentinel-${scene.acquired_at.slice(0,10)}-lat${((bbox[1] + bbox[3]) / 2).toFixed(5)}-lon${((bbox[0] + bbox[2]) / 2).toFixed(5)}`;
+  return <figure className={`search-preview ${available === false ? 'unavailable' : ''}`}>
+    <figcaption><strong>{date(scene.acquired_at, {dateStyle:'medium'})}</strong><small>Produto: {scene.product_id}</small></figcaption>
+    <a href={preview} target="_blank" rel="noreferrer"><img src={preview} alt={`Imagem Sentinel-2 de ${date(scene.acquired_at, {dateStyle:'medium'})}`} onLoad={() => setAvailable(true)} onError={() => setAvailable(false)} /></a>
+    {available === null && <small>Processando e verificando a passagem…</small>}
+    {available === false && <small className="preview-unavailable">Cena encoberta ou área piloto sem rio visível. Escolha outra data.</small>}
+    {available && <DownloadLinks url={preview} name={filename} />}
+  </figure>;
 }
 
 function CaseModal({ id, onClose }) {
@@ -1721,11 +1745,11 @@ function App() {
   const closeCase = React.useCallback(() => setOpenCase(null), []);
   return <>
     <header className="site-header" id="inicio"><div className="container nav landing-nav">
-      <a className="brand" href="#inicio" aria-label="Voltar ao início"><span className="brand-icon"><Icon name="protection" size={25} /></span><span>MANCHA<span className="brand-slash">/</span>INUNDAÇÃO<small>PRESIDENTE GETÚLIO · SC</small></span></a>
+      <a className="brand" href="#inicio" aria-label="Voltar ao início"><span className="brand-icon"><Icon name="protection" size={25} /></span><span>MANCHA<span className="brand-slash">/</span>INUNDAÇÃO<small>APOIO À ANÁLISE · DEFESA CIVIL</small></span></a>
       <nav aria-label="Navegação principal"><a href="#monitoramento">Nível do rio</a><a href="#imagens">Imagens</a><a href="#historia">História</a><button className="nav-admin" onClick={() => { setShowAdmin((value) => !value); setTimeout(() => document.getElementById('admin')?.scrollIntoView({ behavior: 'smooth' }), 0); }}>Admin</button></nav>
     </div></header>
     <main>
-      <section className="landing-intro"><div className="container"><span className="caps">MONITORAMENTO FLUVIAL · ÁREA DE ESTUDO</span><h1>Rio dos Índios, Presidente Getúlio</h1><p>Veja o nível publicado pela Defesa Civil e compare as passagens de satélite mais recentes com o rio visível.</p></div></section>
+      <section className="landing-intro"><div className="container"><span className="caps">MONITORAMENTO FLUVIAL · ÁREA DE ESTUDO</span><h1>Nível do rio e imagens de satélite</h1><p>Acompanhe a estação da área piloto ou escolha coordenadas e duas datas para comparar imagens do Copernicus.</p></div></section>
       <div className="container landing-content"><LiveStation live={live} error={liveError} station={live?.station} monitor={monitor} /><RecentCompare pair={pair} error={pairError} /><PeriodSearch />
         {realEvents.length > 0 && <section className="landing-events" id="eventos"><div className="landing-section-head"><div><span className="caps">REGISTROS</span><h2>Eventos monitorados</h2></div></div><div className="event-grid">{realEvents.slice(0, 3).map((event) => <EventCard key={event.id} item={event} open={setOpenCase} />)}</div></section>}
         <section className="landing-history" id="historia"><div><span className="caps">CURIOSIDADE HISTÓRICA</span><h2>Enchente de novembro de 2023</h2><p>Um episódio documentado com imagens Sentinel-2 de antes e depois. Os níveis do replay são simulados.</p><button className="btn ghost" onClick={() => setOpenCase('history-2023')}>Ver história e imagens <Icon name="arrow" size={17} /></button></div><img src="/api/historical/2023/image/BASELINE?view=default" alt="Vista de Presidente Getúlio antes da enchente de 2023" /></section>
@@ -1733,7 +1757,7 @@ function App() {
       </div>
     </main>
     {showAdmin && <section id="admin" className="landing-admin"><Admin open={setOpenCase} /></section>}
-    <footer><div className="container footer-inner"><div><strong>MANCHA/INUNDAÇÃO</strong><span>Presidente Getúlio · Santa Catarina</span></div><p>Projeto acadêmico de apoio à análise · Consulte a Defesa Civil para orientações oficiais.</p></div></footer>
+    <footer><div className="container footer-inner"><div><strong>MANCHA/INUNDAÇÃO</strong><span>Área piloto · estação DCSC-00043</span></div><p>Projeto acadêmico de apoio à análise · Consulte a Defesa Civil para orientações oficiais.</p></div></footer>
     {openCase && <CaseModal id={openCase} onClose={closeCase} />}
   </>;
 }

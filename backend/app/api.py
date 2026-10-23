@@ -16,7 +16,7 @@ from .adapters import ANAClient, CDSEClient, ProviderError, parsed_time
 from .storage import get
 from .station_reference import OFFICIAL_STATION
 from .pdc import PDCClient, live_station
-from .recent_satellite import load_latest, search_period, load_search_preview, create_search_preview
+from .recent_satellite import load_latest, search_period, load_search_preview, create_search_preview, search_bbox
 from .satellite_demo import load_pair, HISTORICAL_CONTEXT
 from .image_export import presentation_png
 
@@ -218,20 +218,28 @@ def latest_satellite():
             'images': {view: f'/api/satellite/latest/image/{index}?view={view}' for view in ('default', 'natural')}}
             for index, scene in enumerate(manifest['scenes'])]}
 
+def chosen_bbox(lat: float | None, lon: float | None):
+    try:
+        return search_bbox(lat, lon)
+    except ValueError as exc:
+        raise HTTPException(422, str(exc)) from exc
+
+
 @app.get('/api/satellite/search')
-def satellite_search(start: date, end: date):
+def satellite_search(start: date, end: date, lat: float | None = None, lon: float | None = None):
     if end < start or (end - start).days > 60 or start.year < 2017 or end > now().date():
         raise HTTPException(422, 'Escolha um período válido de até 60 dias, entre 2017 e hoje')
     try:
-        return search_period(start, end)
+        return search_period(start, end, bbox=chosen_bbox(lat, lon))
     except ProviderError as exc:
         raise HTTPException(503, str(exc)) from exc
 
 @app.get('/api/satellite/search/preview/{product_id}')
 def satellite_search_preview(product_id: str, view: Literal['default', 'natural'] = 'default',
-                             scale: int = 1):
+                             scale: int = 1, lat: float | None = None, lon: float | None = None):
     try:
-        preview = load_search_preview(product_id) or create_search_preview(product_id)
+        bbox = chosen_bbox(lat, lon)
+        preview = load_search_preview(product_id, bbox) or create_search_preview(product_id, bbox=bbox)
         if not preview or preview.get('unavailable'):
             raise HTTPException(404, 'Passagem encoberta no recorte ou rio não visível')
         record = preview['images'][view]

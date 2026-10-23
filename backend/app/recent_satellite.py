@@ -7,6 +7,7 @@ from datetime import date, datetime, time, timedelta, timezone
 from io import BytesIO
 import hashlib
 import json
+import math
 import tarfile
 import re
 import threading
@@ -14,6 +15,7 @@ import threading
 from PIL import Image, ImageDraw
 import httpx
 from botocore.exceptions import BotoCoreError, ClientError
+from shapely.geometry import Point, shape
 
 from .adapters import CDSEClient, ProviderError, checked, parsed_time, verify_png
 from .models import now
@@ -24,6 +26,7 @@ MANIFEST_KEY = 'latest-sentinel/manifest.json'
 COLLECTION = 'sentinel-2-l2a'
 _preview_lock = threading.Lock()
 PRODUCT_PATTERN = re.compile(r'^S2[ABC]_MSIL2A_\d{8}T\d{6}_N\d{4}_R038_T22JFR_\d{8}T\d{6}$')
+SEARCH_PRODUCT_PATTERN = re.compile(r'^S2[ABC]_MSIL2A_\d{8}T\d{6}_N\d{4}_R\d{3}_T\d{2}[A-Z]{3}_\d{8}T\d{6}$')
 SCREEN_SCRIPT = '''//VERSION=3
 function setup() { return {input:["SCL","dataMask"], mosaicking:Mosaicking.TILE,
   output:[{id:"quality",bands:1,sampleType:"UINT8"}]}; }
@@ -110,10 +113,26 @@ def _river_visible(blob):
         return count > 0 and water / count >= .02
 
 
-def _request(client, feature, script, resolution, outputs):
+def search_bbox(lat=None, lon=None):
+    if lat is None and lon is None:
+        return BBOX
+    if lat is None or lon is None or not all(math.isfinite(value) for value in (lat, lon)):
+        raise ValueError('Informe latitude e longitude válidas')
+    if not (-56 <= lat <= 83 and -179.98 <= lon <= 179.98):
+        raise ValueError('Coordenadas fora da cobertura Sentinel-2')
+    return [round(lon - .011, 6), round(lat - .00975, 6),
+            round(lon + .011, 6), round(lat + .00975, 6)]
+
+
+def search_key(product_id, bbox):
+    area = hashlib.sha256(json.dumps(bbox).encode()).hexdigest()[:16]
+    return f'search-sentinel/{area}/{product_id}'
+
+
+def _request(client, feature, script, resolution, outputs, bbox=None):
     acquired = parsed_time(feature['properties']['datetime'])
     start = acquired.replace(hour=0, minute=0, second=0, microsecond=0)
-    payload = {'input': {'bounds': {'bbox': BBOX,
+    payload = {'input': {'bounds': {'bbox': bbox or BBOX,
         'properties': {'crs': 'http://www.opengis.net/def/crs/EPSG/0/4326'}},
         'data': [{'type': COLLECTION, 'dataFilter': {'timeRange': {
             'from': start.isoformat(), 'to': (start + timedelta(days=1)).isoformat()}},
@@ -131,20 +150,21 @@ def _request(client, feature, script, resolution, outputs):
         raise ProviderError('Falha ao processar passagem Sentinel-2') from exc
     metadata = json.loads(blobs.pop('userdata'))
     product_ids = {t.get('productId', '').removesuffix('.SAFE') for t in metadata['tiles']}
-    if product_ids != {feature['id'].removesuffix('.SAFE')}:
+    selected_product = feature['id'].removesuffix('.SAFE')
+    if selected_product not in product_ids or (bbox is None and product_ids != {selected_product}):
         raise ProviderError('Produto processado difere da passagem escolhida')
     return blobs
 
 
-def _scene(client, feature, key_prefix='latest-sentinel'):
-    screening = _request(client, feature, SCREEN_SCRIPT, 256, ('quality', 'userdata'))
-    if _quality(screening['quality']) > 10 or _river_obscured(screening['quality']) > 10:
+def _scene(client, feature, key_prefix='latest-sentinel', bbox=None, require_river=True):
+    screening = _request(client, feature, SCREEN_SCRIPT, 256, ('quality', 'userdata'), bbox=bbox)
+    if _quality(screening['quality']) > 10 or (require_river and _river_obscured(screening['quality']) > 10):
         return None
     images = _request(client, feature, OPTICAL_SCRIPT, 1024,
-        ('default', 'natural', 'quality', 'userdata'))
+        ('default', 'natural', 'quality', 'userdata'), bbox=bbox)
     cloud = _quality(images['quality'])
-    river_obscured = _river_obscured(images['quality'])
-    if cloud > 10 or river_obscured > 10 or not _river_visible(images['default']):
+    river_obscured = _river_obscured(images['quality']) if require_river else None
+    if cloud > 10 or (require_river and (river_obscured > 10 or not _river_visible(images['default']))):
         return None
     product_id = feature['id'].removesuffix('.SAFE')
     record = {'product_id': product_id,
@@ -160,19 +180,27 @@ def _scene(client, feature, key_prefix='latest-sentinel'):
     return record
 
 
-def search_period(start: date, end: date, client=None):
+def search_period(start: date, end: date, client=None, bbox=None):
     """Catalog dates are discovery metadata; local visibility is checked on preview."""
     client = client or CDSEClient()
     if not client.ready:
         raise ProviderError('Credenciais Copernicus não configuradas')
     window_start = datetime.combine(start - timedelta(days=15), time.min, timezone.utc)
     window_end = min(now(), datetime.combine(end + timedelta(days=16), time.min, timezone.utc))
-    features = client.search(BBOX, window_start, window_end, collection=COLLECTION)
+    area = bbox or BBOX
+    features = client.search(area, window_start, window_end, collection=COLLECTION)
+    center = Point((area[0] + area[2]) / 2, (area[1] + area[3]) / 2)
+    def covers_center(feature):
+        try:
+            return bool(feature.get('geometry') and shape(feature['geometry']).covers(center))
+        except (TypeError, ValueError, KeyError):
+            return False
+    features.sort(key=lambda feature: not covers_center(feature))
     found = []
     seen_dates = set()
     for feature in features:
         product_id = feature.get('id', '').removesuffix('.SAFE')
-        if not PRODUCT_PATTERN.fullmatch(product_id):
+        if not SEARCH_PRODUCT_PATTERN.fullmatch(product_id):
             continue
         acquired = parsed_time(feature['properties']['datetime'])
         day = acquired.date()
@@ -185,16 +213,17 @@ def search_period(start: date, end: date, client=None):
             'tile_cloud_percent': feature['properties'].get('eo:cloud_cover')})
     found.sort(key=lambda x: (x['distance_days'], x['acquired_at']))
     return {'start': start.isoformat(), 'end': end.isoformat(), 'margin_days': 15,
-        'checked_at': now().isoformat(), 'scenes': found[:24],
-        'note': 'Nuvens do catálogo referem-se ao tile inteiro; a prévia verifica o rio no recorte.'}
+        'bbox': area, 'checked_at': now().isoformat(), 'scenes': found[:24],
+        'note': 'Nuvens do catálogo referem-se ao tile inteiro; a prévia verifica o recorte escolhido.'}
 
 
-def load_search_preview(product_id):
-    if not PRODUCT_PATTERN.fullmatch(product_id):
+def load_search_preview(product_id, bbox=None):
+    if not SEARCH_PRODUCT_PATTERN.fullmatch(product_id):
         raise ProviderError('Identificador Sentinel-2 inválido')
+    area = bbox or BBOX
     try:
-        record = json.loads(get(f'search-sentinel/{product_id}/manifest.json'))
-        if record['product_id'] != product_id:
+        record = json.loads(get(f'{search_key(product_id, area)}/manifest.json'))
+        if record['product_id'] != product_id or record['bbox'] != area:
             return None
         if record.get('unavailable'):
             return record
@@ -208,11 +237,12 @@ def load_search_preview(product_id):
         return None
 
 
-def create_search_preview(product_id, client=None):
-    if not PRODUCT_PATTERN.fullmatch(product_id):
+def create_search_preview(product_id, client=None, bbox=None):
+    if not SEARCH_PRODUCT_PATTERN.fullmatch(product_id):
         raise ProviderError('Identificador Sentinel-2 inválido')
+    area = bbox or BBOX
     with _preview_lock:
-        cached = load_search_preview(product_id)
+        cached = load_search_preview(product_id, area)
         if cached:
             return cached
         client = client or CDSEClient()
@@ -220,15 +250,17 @@ def create_search_preview(product_id, client=None):
         if acquired > now() or acquired.year < 2017:
             raise ProviderError('Data Sentinel-2 inválida')
         day = acquired.replace(hour=0, minute=0, second=0)
-        features = client.search(BBOX, day, day + timedelta(days=1), collection=COLLECTION)
+        features = client.search(area, day, day + timedelta(days=1), collection=COLLECTION)
         feature = next((f for f in features if f.get('id', '').removesuffix('.SAFE') == product_id), None)
         if not feature:
             raise ProviderError('Produto não encontrado no catálogo Copernicus')
-        record = _scene(client, feature, key_prefix='search-sentinel')
+        record = _scene(client, feature, key_prefix=search_key(product_id, area),
+            bbox=area, require_river=area == BBOX)
         if record is None:
             record = {'product_id': product_id, 'unavailable': True,
                 'reason': 'Cena encoberta no recorte ou rio não visível'}
-        put(f'search-sentinel/{product_id}/manifest.json',
+        record['bbox'] = area
+        put(f'{search_key(product_id, area)}/manifest.json',
             json.dumps(record, ensure_ascii=False).encode(), content_type='application/json')
         return record
 

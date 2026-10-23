@@ -1576,6 +1576,12 @@ html { scroll-behavior: smooth; }
 .search-preview .preview-unavailable { display: none; color: #8a3929; }
 .search-preview.unavailable img { display: none; }
 .search-preview.unavailable .preview-unavailable { display: block; }
+.search-view { margin: 18px 0 0; width: fit-content; }
+.search-comparison { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; align-items: start; }
+.search-comparison .search-preview { margin-top: 12px; min-width: 0; }
+.search-comparison .search-preview img { width: 100%; }
+.search-comparison .search-preview figcaption { display: grid; gap: 5px; }
+@media (max-width: 700px) { .search-comparison { grid-template-columns: 1fr; } }
 .image-downloads { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px; width: 100%; font-size: 12px; }
 .image-downloads span { color: var(--muted); }
 .image-downloads a { color: var(--blue); font-weight: 700; text-decoration: underline; }

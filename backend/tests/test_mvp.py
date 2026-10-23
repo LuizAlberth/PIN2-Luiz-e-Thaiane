@@ -113,6 +113,28 @@ def test_period_search_returns_nearby_dates_only():
     assert [scene['distance_days'] for scene in found['scenes']] == [3, 11]
     assert all(scene['tile_cloud_percent'] == 12.5 for scene in found['scenes'])
 
+def test_coordinate_search_uses_local_area_and_keeps_previews_separate():
+    from datetime import date
+    area = recent_satellite.search_bbox(-27.038, -49.621)
+    assert area == [-49.632, -27.04775, -49.610, -27.02825]
+    assert recent_satellite.search_key('scene', area) != recent_satellite.search_key('scene', BBOX)
+    with pytest.raises(ValueError, match='latitude e longitude'):
+        recent_satellite.search_bbox(-27.038, None)
+    with pytest.raises(ValueError, match='fora da cobertura'):
+        recent_satellite.search_bbox(90, 0)
+
+    class Catalog:
+        ready = True
+        def search(self, bbox, start, end, collection):
+            assert bbox == area and collection == 'sentinel-2-l2a'
+            return [{'id': 'S2A_MSIL2A_20231120T132251_N0512_R042_T23KMA_20231120T132251',
+                'properties': {'datetime': '2023-11-20T13:22:51Z', 'eo:cloud_cover': 8.0}}]
+
+    result = recent_satellite.search_period(date(2023, 11, 16), date(2023, 11, 17), Catalog(), bbox=area)
+    assert result['bbox'] == area
+    assert len(result['scenes']) == 1
+    assert result['scenes'][0]['distance_days'] == 3
+
 @pytest.fixture
 def db(tmp_path, monkeypatch):
     engine = create_engine('sqlite://', connect_args={'check_same_thread': False}, poolclass=StaticPool)
