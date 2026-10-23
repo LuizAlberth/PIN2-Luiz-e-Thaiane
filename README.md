@@ -27,6 +27,8 @@ No .env, configure ADMIN_EMAIL, ADMIN_PASSWORD e APP_SECRET (mínimo de 32 carac
 
 Abra **http://localhost:5173**. O comando inicia API, worker e Vite. Ctrl+C encerra os três. O banco local é pin2.db; as imagens baixadas ficam em storage/. O worker procura automaticamente novas cenas. Para forçar uma consulta manual ao Copernicus:
 
+Se as portas padrão estiverem ocupadas por outra cópia do projeto, escolha outras sem alterar o código: `PIN2_API_PORT=8010 PIN2_WEB_PORT=5180 .venv/bin/python scripts/run_local.py`, e abra `http://localhost:5180`.
+
     .venv/bin/python scripts/refresh_sentinel_latest.py
 
 Use **Admin** na própria página para entrar com a senha configurada no servidor. A página pública dispensa login. Em 22/10/2026, o histórico local anterior de configurações, eventos, leituras, jobs e auditoria foi zerado e a configuração DCSC foi ativada como **v1**. O histórico de commits do GitHub não foi reescrito. O cenário histórico de 2023 continua disponível no pop-up.

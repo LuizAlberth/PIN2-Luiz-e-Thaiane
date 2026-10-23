@@ -12,12 +12,15 @@ import app  # Loads .env without overriding shell variables.
 
 def main():
     env = os.environ.copy()
+    api_port = int(env.get('PIN2_API_PORT', '8000'))
+    web_port = int(env.get('PIN2_WEB_PORT', '5173'))
     env.setdefault('DATABASE_URL', f'sqlite:///{ROOT / "pin2.db"}')
     env.setdefault('LOCAL_STORAGE', str(ROOT / 'storage'))
+    env['API_PROXY_TARGET'] = f'http://127.0.0.1:{api_port}'
     commands = [
-        ([sys.executable, '-m', 'uvicorn', 'app.api:app', '--host', '127.0.0.1', '--port', '8000'], ROOT / 'backend'),
+        ([sys.executable, '-m', 'uvicorn', 'app.api:app', '--host', '127.0.0.1', '--port', str(api_port)], ROOT / 'backend'),
         ([sys.executable, '-m', 'app.worker'], ROOT / 'backend'),
-        (['npm', 'run', 'dev', '--', '--host', '127.0.0.1', '--port', '5173', '--strictPort'], ROOT / 'frontend'),
+        (['npm', 'run', 'dev', '--', '--host', '127.0.0.1', '--port', str(web_port), '--strictPort'], ROOT / 'frontend'),
     ]
     processes = []
     def stop(*_):
@@ -26,10 +29,10 @@ def main():
     try:
         for command, cwd in commands:
             processes.append(subprocess.Popen(command, cwd=cwd, env=env, start_new_session=True))
-        print('Aplicação: http://localhost:5173 · Admin: credenciais do .env', flush=True)
+        print(f'Aplicação: http://localhost:{web_port} · Admin: credenciais do .env', flush=True)
         while True:
             if any(p.poll() is not None for p in processes):
-                raise RuntimeError('Um serviço encerrou. Confira a saída acima e se as portas 8000/5173 estão livres.')
+                raise RuntimeError(f'Um serviço encerrou. Confira a saída acima e se as portas {api_port}/{web_port} estão livres.')
             time.sleep(1)
     except KeyboardInterrupt:
         pass
