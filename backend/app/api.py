@@ -18,6 +18,12 @@ from .station_reference import OFFICIAL_STATION
 from .pdc import PDCClient, live_station
 from .recent_satellite import load_latest, search_period, load_search_preview, create_search_preview
 from .satellite_demo import load_pair, HISTORICAL_CONTEXT
+from .image_export import presentation_png
+
+def exported_png(blob: bytes, scale: int) -> bytes:
+    if scale not in (1, 2, 4):
+        raise HTTPException(422, 'Ampliação deve ser 1×, 2× ou 4×')
+    return presentation_png(blob, scale)
 
 @asynccontextmanager
 async def lifespan(app):
@@ -28,6 +34,8 @@ async def lifespan(app):
         raise RuntimeError('Substitua as credenciais de exemplo no arquivo .env')
     if os.getenv('APP_SECRET') and len(os.getenv('APP_SECRET')) < 32:
         raise RuntimeError('APP_SECRET deve ter ao menos 32 caracteres')
+    if os.getenv('PUBLIC_DEPLOYMENT') == '1' and (len(password) < 16 or len(os.getenv('APP_SECRET', '')) < 32):
+        raise RuntimeError('Publicação exige ADMIN_PASSWORD com ao menos 16 caracteres e APP_SECRET com ao menos 32')
     from .db import SessionLocal
     with SessionLocal() as db:
         if email and password:
@@ -220,7 +228,8 @@ def satellite_search(start: date, end: date):
         raise HTTPException(503, str(exc)) from exc
 
 @app.get('/api/satellite/search/preview/{product_id}')
-def satellite_search_preview(product_id: str, view: Literal['default', 'natural'] = 'default'):
+def satellite_search_preview(product_id: str, view: Literal['default', 'natural'] = 'default',
+                             scale: int = 1):
     try:
         preview = load_search_preview(product_id) or create_search_preview(product_id)
         if not preview or preview.get('unavailable'):
@@ -229,12 +238,14 @@ def satellite_search_preview(product_id: str, view: Literal['default', 'natural'
         blob = get(record['key'])
         if hashlib.sha256(blob).hexdigest() != record['sha256']:
             raise HTTPException(503, 'Arquivo corrompido')
-        return Response(blob, media_type='image/png', headers={'Cache-Control': 'public, max-age=86400'})
+        return Response(exported_png(blob, scale), media_type='image/png',
+            headers={'Cache-Control': 'public, max-age=86400'})
     except ProviderError as exc:
         raise HTTPException(503, str(exc)) from exc
 
 @app.get('/api/satellite/latest/image/{index}')
-def latest_satellite_image(index: int, view: Literal['default', 'natural'] = 'default'):
+def latest_satellite_image(index: int, view: Literal['default', 'natural'] = 'default',
+                           scale: int = 1):
     manifest = load_latest()
     if not manifest or index not in (0, 1):
         raise HTTPException(404, 'Imagem não disponível')
@@ -242,7 +253,8 @@ def latest_satellite_image(index: int, view: Literal['default', 'natural'] = 'de
     image = get(record['key'])
     if hashlib.sha256(image).hexdigest() != record['sha256']:
         raise HTTPException(503, 'Checksum da imagem divergente')
-    return Response(image, media_type='image/png', headers={'Cache-Control': 'public, max-age=300'})
+    return Response(exported_png(image, scale), media_type='image/png',
+        headers={'Cache-Control': 'public, max-age=300'})
 
 @app.get('/api/satellite/latest/rejected')
 def latest_rejected_image():
@@ -270,12 +282,14 @@ def historical_2023():
             for role, (candidate, _) in pair.items()}}
 
 @app.get('/api/historical/2023/image/{role}')
-def historical_2023_image(role: Literal['BASELINE', 'POST_EVENT'], view: Literal['default', 'natural'] = 'default'):
+def historical_2023_image(role: Literal['BASELINE', 'POST_EVENT'],
+                          view: Literal['default', 'natural'] = 'default', scale: int = 1):
     try:
         image = load_pair()[role][1][view]
     except ProviderError as exc:
         raise HTTPException(503, str(exc)) from exc
-    return Response(image, media_type='image/png', headers={'Cache-Control': 'public, max-age=86400'})
+    return Response(exported_png(image, scale), media_type='image/png',
+        headers={'Cache-Control': 'public, max-age=86400'})
 
 @app.get('/api/events')
 def events(mode: Literal['AO_VIVO','SIMULACAO'] = 'AO_VIVO', page: int = 1, db: Session = Depends(session)):
@@ -307,7 +321,8 @@ def event_detail(event_id: str, req: Request, db: Session = Depends(session)):
 
 @app.get('/api/events/{event_id}/scene/{role}')
 def scene_image(event_id: str, role: Literal['BASELINE','POST_EVENT'], req: Request,
-                view: Literal['default', 'natural'] = 'default', version: int | None = None,
+                view: Literal['default', 'natural'] = 'default', scale: int = 1,
+                version: int | None = None,
                 db: Session = Depends(session)):
     e = db.get(Event, event_id)
     if not e or not allowed(e, optionally_admin(req, db)):
@@ -329,7 +344,8 @@ def scene_image(event_id: str, role: Literal['BASELINE','POST_EVENT'], req: Requ
         raise HTTPException(503, 'Arquivo indisponível') from exc
     if hashlib.sha256(blob).hexdigest() != checksum:
         raise HTTPException(503, 'Arquivo corrompido')
-    return Response(content=blob, media_type='image/png', headers={'Cache-Control': 'private, max-age=60'})
+    return Response(content=exported_png(blob, scale), media_type='image/png',
+        headers={'Cache-Control': 'private, max-age=60'})
 
 @app.get('/api/admin/configs')
 def configs(db: Session = Depends(session), user: User = Depends(current_admin)):

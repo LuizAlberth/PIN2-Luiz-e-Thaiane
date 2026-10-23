@@ -1,0 +1,58 @@
+# Single-VM deployment for an Oracle Always Free instance. Keep all containers
+# on the same VM: SQLite WAL and local image storage share the appdata volume.
+services:
+  api:
+    build: ./backend
+    env_file: .env.production
+    environment:
+      DATABASE_URL: sqlite:////data/pin2.db
+      LOCAL_STORAGE: /data/storage
+      FRONTEND_ORIGIN: https://${SITE_DOMAIN:?Set SITE_DOMAIN in .env.production}
+      PUBLIC_DEPLOYMENT: "1"
+    volumes:
+      - appdata:/data
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/api/health', timeout=5)"]
+      interval: 20s
+      timeout: 8s
+      retries: 5
+    restart: unless-stopped
+
+  worker:
+    build: ./backend
+    command: ["python", "-m", "app.worker"]
+    env_file: .env.production
+    environment:
+      DATABASE_URL: sqlite:////data/pin2.db
+      LOCAL_STORAGE: /data/storage
+    volumes:
+      - appdata:/data
+    depends_on:
+      api: {condition: service_healthy}
+    restart: unless-stopped
+
+  web:
+    build: ./frontend
+    depends_on:
+      api: {condition: service_healthy}
+    restart: unless-stopped
+
+  caddy:
+    image: caddy:2-alpine
+    environment:
+      SITE_DOMAIN: ${SITE_DOMAIN:?Set SITE_DOMAIN in .env.production}
+    volumes:
+      - ./deploy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    ports:
+      - "80:80"
+      - "443:443"
+    depends_on:
+      - web
+    restart: unless-stopped
+
+volumes:
+  appdata:
+  caddy_data:
+  caddy_config:

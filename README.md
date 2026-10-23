@@ -12,6 +12,8 @@ MVP acadêmico em uma página: nível público do Rio dos Índios, gatilhos indi
 
 O azul das imagens é um destaque de possível água por SCL/NDWI, não uma mancha oficial de inundação. A resolução nativa do Sentinel-2 é de 10–20 m: o arquivo exibido em 1024 × 1024 não acrescenta detalhes ao sensor. A página não emite alertas oficiais.
 
+Cada imagem aprovada oferece download PNG em **2× ou 4×**; uma original de 1024 × 1024 gera arquivos de 2048 × 2048 e 4096 × 4096. O servidor usa interpolação Lanczos para apresentação; o sensor não passa a ter mais detalhe. A imagem original e seu checksum permanecem intactos. Passagens rejeitadas pela visibilidade não ganham download ampliado.
+
 ## Rodar no computador
 
 Requisitos: Python 3.12+, Node.js e npm. Na raiz do repositório:
@@ -48,6 +50,34 @@ Para executar com PostgreSQL/PostGIS e MinIO:
     docker compose up --build -d
 
 Configure também POSTGRES_PASSWORD, S3_ACCESS_KEY e S3_SECRET_KEY no .env. Abra **http://localhost:8080**; a documentação da API está em /api/docs. API e worker compartilham o armazenamento MinIO. Para acesso público contínuo, hospede os serviços em um servidor com domínio, HTTPS, backups do banco/objetos, supervisão dos containers e credenciais próprias. docker compose down preserva os volumes.
+
+### Publicar gratuitamente sem manter o Codex aberto
+
+O programa **não depende do Codex**. No computador, `docker compose up --build -d` deixa API, worker e página em segundo plano; o computador e o Docker precisam permanecer ligados. Para acesso público contínuo, este repositório inclui [compose.free.yaml](compose.free.yaml), que roda API, worker, página e HTTPS/Caddy em uma VM própria, com banco SQLite e imagens em um volume persistente. O compose reinicia os processos automaticamente. A versão online parte de um banco novo: depois do primeiro acesso, entre no Admin e ative DCSC-00043 com a referência experimental revisada pela equipe. Não copie a senha local `1234` para uma publicação pública.
+
+Uma possibilidade sem mensalidade é uma [VM Oracle Always Free](https://docs.oracle.com/en-us/iaas/Content/FreeTier/freetier_topic-Always_Free_Resources.htm) e um nome [DuckDNS gratuito](https://www.duckdns.org/faqs.jsp). **É necessário criar essas contas; ainda não existe uma URL pública desta instalação.** Na Oracle, escolha uma VM Ampere A1 com etiqueta *Always Free*, dentro da cota da sua conta, Ubuntu 24.04 ARM, IP público e chave SSH. A capacidade da região pode impedir a criação imediata; confira as condições atuais no painel da Oracle. Libere entrada TCP 80 e 443 na rede da VM e mantenha 22 apenas para administração. No DuckDNS, crie um subdomínio e aponte-o para o IP público da VM.
+
+Na VM, instale Docker Engine e o plugin Compose seguindo o [guia oficial para Ubuntu](https://docs.docker.com/engine/install/ubuntu/). Então execute:
+
+```bash
+git clone https://github.com/LuizAlberth/PIN2-Luiz-e-Thaiane.git
+cd PIN2-Luiz-e-Thaiane
+cp .env.production.example .env.production
+chmod 600 .env.production
+nano .env.production
+```
+
+Preencha `SITE_DOMAIN` com o subdomínio DuckDNS **sem** `https://`. Copie para `PDC_SUPABASE_ANON_KEY`, `CDSE_CLIENT_ID` e `CDSE_CLIENT_SECRET` os valores do seu `.env` local. Configure `ADMIN_EMAIL`, uma **nova senha exclusiva de pelo menos 16 caracteres** e `APP_SECRET` com pelo menos 32 caracteres; `openssl rand -hex 32` gera um segredo adequado. Nunca envie `.env.production` ao GitHub. Depois:
+
+```bash
+sudo docker compose --env-file .env.production -f compose.free.yaml up -d --build
+sudo docker compose --env-file .env.production -f compose.free.yaml ps
+sudo docker compose --env-file .env.production -f compose.free.yaml logs --tail=80 api worker caddy
+```
+
+Abra `https://SEU-SUBDOMINIO.duckdns.org`. O Caddy solicita e renova o certificado HTTPS automaticamente quando DNS e portas 80/443 estão corretos ([documentação](https://caddyserver.com/docs/automatic-https)). No Admin, selecione **Defesa Civil DCSC-00043**, revise o parâmetro experimental e clique **Validar e ativar**. O worker seguirá coletando e verificando imagens sem navegador aberto. Para atualizar o programa, use `git pull --ff-only` e repita `sudo docker compose ... up -d --build`; os volumes preservam banco, imagens e certificados. `docker compose down -v` apaga esses volumes e não deve ser usado numa atualização.
+
+Faça cópias do banco e das imagens periodicamente com `sudo ./scripts/backup_free.sh`; os arquivos aparecem em `backups/` na VM. Guarde outra cópia fora da VM. Monitore `logs` e o espaço em disco. A gratuidade depende de permanecer dentro das cotas da Oracle e de disponibilidade da VM; a Oracle informa que recursos ociosos Always Free podem ser retomados. A alternativa Render Free não serve para este fluxo contínuo: o serviço hiberna e perde arquivos locais em reinícios ([limitações oficiais](https://render.com/docs/free)).
 
 ## Validação
 

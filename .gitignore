@@ -1,4 +1,5 @@
 .env
+.env.production
 .venv/
 __pycache__/
 *.pyc
@@ -6,5 +7,8 @@ __pycache__/
 node_modules/
 dist/
 *.db
+*.db-shm
+*.db-wal
 storage/
+backups/
 .coverage

@@ -568,6 +568,11 @@ function Events({ open }) {
 function sceneUrl(scene, view) {
   return `${scene.image_url}${scene.image_url.includes("?") ? "&" : "?"}view=${view}`;
 }
+function DownloadLinks({ url, name }) {
+  return <div className="image-downloads"><span>Baixar PNG:</span>{[2, 4].map((scale) =>
+    <a key={scale} href={`${url}${url.includes('?') ? '&' : '?'}scale=${scale}`} download={`${name}-${scale}x.png`}>{scale}×</a>)}
+  </div>;
+}
 function SceneCard({ scene, label, view }) {
   const optical = scene?.collection === "sentinel-2-l2a";
   return (
@@ -1608,13 +1613,14 @@ function RecentCompare({ pair, error }) {
               <a href={scene.images[view]} target="_blank" rel="noreferrer" title="Abrir imagem em tamanho completo">
                 <img src={scene.images[view]} alt={`Rio dos Índios na passagem de ${date(scene.acquired_at, { dateStyle: "medium" })}`} />
               </a>
-              <figcaption><strong>{index === 0 ? "Passagem anterior" : "Passagem mais recente utilizável"}</strong><span>{date(scene.acquired_at, { dateStyle: "medium" })} · {scene.river_obscured_percent == null ? `${scene.cloud_percent}% encoberto no recorte` : `${scene.river_obscured_percent}% encoberto no rio`}</span></figcaption>
+              <figcaption><strong>{index === 0 ? "Passagem anterior" : "Passagem mais recente utilizável"}</strong><span>{date(scene.acquired_at, { dateStyle: "medium" })} · {scene.river_obscured_percent == null ? `${scene.cloud_percent}% encoberto no recorte` : `${scene.river_obscured_percent}% encoberto no rio`}</span><DownloadLinks url={scene.images[view]} name={`rio-dos-indios-${scene.acquired_at.slice(0,10)}`} /></figcaption>
             </figure>)}
           </div>}
           <div className="latest-notes">
             <p>{pair.latest_pass ? `Última passagem catalogada: ${date(pair.latest_pass.acquired_at, { dateStyle: "medium" })} (${pair.latest_pass.tile_cloud_percent}% de nuvens no tile).` : ""} A comparação usa as últimas passagens com até 10% de pixels encobertos ou inválidos no recorte.{pair.rejected && <> <a className="rejected-link" href={pair.rejected.image_url} target="_blank" rel="noreferrer">Ver imagem encoberta de {date(pair.rejected.acquired_at, { dateStyle: "medium" })} ({pair.rejected.obscured_percent}% do recorte) ↗</a></>}</p>
             <p>Azul indica possível água por SCL/NDWI; não é uma mancha oficial de inundação. Resolução nativa de 10–20 m. Catálogo consultado em {date(pair.checked_at)}.</p>
           </div>
+          <p className="upscale-note">Os arquivos 2× e 4× usam interpolação para ampliar a apresentação. Não acrescentam detalhes medidos pelo satélite.</p>
         </>}
     </section>
   );
@@ -1628,9 +1634,10 @@ function PeriodSearch() {
   const [loading, setLoading] = useState(false);
   const [message, setMessage] = useState('');
   const [view, setView] = useState('default');
+  const [previewAvailable, setPreviewAvailable] = useState(null);
   async function submit(event) {
     event.preventDefault();
-    setLoading(true); setMessage(''); setResults(null); setSelected(null);
+    setLoading(true); setMessage(''); setResults(null); setSelected(null); setPreviewAvailable(null);
     try {
       const data = await api(`/satellite/search?start=${start}&end=${end}`);
       setResults(data);
@@ -1648,10 +1655,10 @@ function PeriodSearch() {
     </form>
     {message && <p className="data-message" role="status">{message}</p>}
     {results && <><p className="search-note">{results.scenes.length} datas encontradas. A porcentagem de nuvens é do tile inteiro; abra uma prévia para verificar o rio no recorte.</p>
-      <div className="search-results">{results.scenes.map((scene) => <button key={scene.product_id} className={selected?.product_id === scene.product_id ? 'selected' : ''} onClick={() => {setSelected(scene); setMessage(''); setView('default');}}>
+      <div className="search-results">{results.scenes.map((scene) => <button key={scene.product_id} className={selected?.product_id === scene.product_id ? 'selected' : ''} onClick={() => {setSelected(scene); setMessage(''); setView('default'); setPreviewAvailable(null);}}>
         <strong>{date(scene.acquired_at, {dateStyle:'medium'})}</strong><span>{scene.in_period ? 'No período' : `${scene.distance_days} dia(s) do período`}</span><small>{scene.tile_cloud_percent == null ? 'Nuvens não informadas' : `${scene.tile_cloud_percent}% nuvens no tile`}</small>
       </button>)}</div>
-      {selected && <div className="search-preview"><div><strong>Prévia de {date(selected.acquired_at, {dateStyle:'medium'})}</strong><div className="segmented"><button className={view === 'default' ? 'active' : ''} onClick={() => setView('default')}>Água destacada</button><button className={view === 'natural' ? 'active' : ''} onClick={() => setView('natural')}>Cor natural</button></div></div><p>O sistema só mostra a imagem se o rio estiver visível e até 10% do recorte e do corredor estiver encoberto.</p><a href={preview} target="_blank" rel="noreferrer"><img key={preview} src={preview} alt={`Rio dos Índios em ${date(selected.acquired_at, {dateStyle:'medium'})}`} onError={(e) => {e.currentTarget.closest('.search-preview').classList.add('unavailable');}} onLoad={(e) => {e.currentTarget.closest('.search-preview').classList.remove('unavailable');}} /></a><small className="preview-unavailable">Prévia indisponível: cena encoberta ou rio sem visibilidade neste recorte. Escolha outra data.</small><small>Produto: {selected.product_id}</small></div>}
+      {selected && <div className={`search-preview ${previewAvailable === false ? 'unavailable' : ''}`}><div><strong>Prévia de {date(selected.acquired_at, {dateStyle:'medium'})}</strong><div className="segmented"><button className={view === 'default' ? 'active' : ''} onClick={() => {setView('default'); setPreviewAvailable(null);}}>Água destacada</button><button className={view === 'natural' ? 'active' : ''} onClick={() => {setView('natural'); setPreviewAvailable(null);}}>Cor natural</button></div></div><p>O sistema só mostra a imagem se o rio estiver visível e até 10% do recorte e do corredor estiver encoberto.</p><a href={preview} target="_blank" rel="noreferrer"><img key={preview} src={preview} alt={`Rio dos Índios em ${date(selected.acquired_at, {dateStyle:'medium'})}`} onError={() => setPreviewAvailable(false)} onLoad={() => setPreviewAvailable(true)} /></a><small className="preview-unavailable">Prévia indisponível: cena encoberta ou rio sem visibilidade neste recorte. Escolha outra data.</small>{previewAvailable && <><DownloadLinks url={preview} name={`rio-dos-indios-${selected.acquired_at.slice(0,10)}`} /><small>Ampliação por interpolação; sem novos detalhes do sensor.</small></>}<small>Produto: {selected.product_id}</small></div>}
     </>}
   </section>;
 }
@@ -1685,9 +1692,10 @@ function CaseModal({ id, onClose }) {
         <div className="case-scenes">
           {[["BASELINE", "Antes"], ["POST_EVENT", "Depois"]].map(([role, label]) => {
             const scene = caseData.scenes[role];
-            return scene && <figure key={role}><a href={sceneUrl(scene, view)} target="_blank" rel="noreferrer"><img src={sceneUrl(scene, view)} alt={`${label}: rio e entorno em ${date(scene.acquired_at, { dateStyle: "medium" })}`} /></a><figcaption>{label} · {date(scene.acquired_at, { dateStyle: "medium" })}</figcaption></figure>;
+            return scene && <figure key={role}><a href={sceneUrl(scene, view)} target="_blank" rel="noreferrer"><img src={sceneUrl(scene, view)} alt={`${label}: rio e entorno em ${date(scene.acquired_at, { dateStyle: "medium" })}`} /></a><figcaption>{label} · {date(scene.acquired_at, { dateStyle: "medium" })}<DownloadLinks url={sceneUrl(scene, view)} name={`rio-dos-indios-${scene.acquired_at.slice(0,10)}`} /></figcaption></figure>;
           })}
         </div>
+        {(caseData.scenes.BASELINE || caseData.scenes.POST_EVENT) && <p className="upscale-note">Ampliação 2×/4× por interpolação para apresentação; a resolução do sensor não muda.</p>}
         {!caseData.scenes.BASELINE && !caseData.scenes.POST_EVENT && <p className="data-message">Gatilho registrado. As imagens Sentinel-1 do período ainda estão em processamento ou indisponíveis.</p>}
         {caseData.failure_summary && <p className="data-message">{caseData.failure_summary}</p>}
         {context?.sources && <div className="case-sources">{context.sources.map((source) => <a key={source.url} href={source.url} target="_blank" rel="noreferrer">{source.title} ↗</a>)}</div>}

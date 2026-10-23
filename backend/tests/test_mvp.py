@@ -21,6 +21,19 @@ import app.storage as storage
 from app.api import app
 from app.pdc import PDCClient, live_station
 from app import recent_satellite
+from app.image_export import presentation_png
+
+def test_presentation_upscale_preserves_original_and_has_bounded_sizes():
+    source = BytesIO()
+    Image.new('RGBA', (16, 12), (40, 90, 180, 255)).save(source, 'PNG')
+    original = source.getvalue()
+    assert presentation_png(original, 1) == original
+    for scale in (2, 4):
+        with Image.open(BytesIO(presentation_png(original, scale))) as enlarged:
+            assert enlarged.size == (16 * scale, 12 * scale)
+    assert Image.open(BytesIO(original)).size == (16, 12)
+    with pytest.raises(ValueError, match='Ampliação'):
+        presentation_png(original, 8)
 
 def test_dcsc_configuration_and_automatic_trigger(db, monkeypatch):
     session, user = db
@@ -442,5 +455,9 @@ def test_historical_pair_is_public_without_a_demo_event(db):
             assert metadata.json()['scenes']['BASELINE']['acquired_at'][:10] == '2023-11-05'
             image = client.get('/api/historical/2023/image/POST_EVENT?view=default')
             assert image.status_code == 200 and image.content.startswith(b'\x89PNG')
+            enlarged = client.get('/api/historical/2023/image/POST_EVENT?view=default&scale=2')
+            assert enlarged.status_code == 200
+            assert Image.open(BytesIO(enlarged.content)).size == (2048, 2048)
+            assert client.get('/api/historical/2023/image/POST_EVENT?scale=3').status_code == 422
     finally:
         app.dependency_overrides.clear()

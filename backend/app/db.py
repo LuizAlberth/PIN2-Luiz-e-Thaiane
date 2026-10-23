@@ -1,5 +1,5 @@
 import os
-from sqlalchemy import create_engine, text
+from sqlalchemy import create_engine, text, event
 from sqlalchemy.engine import URL
 from sqlalchemy.orm import DeclarativeBase, sessionmaker
 
@@ -8,8 +8,12 @@ if not DATABASE_URL and os.getenv('POSTGRES_HOST'):
     DATABASE_URL = URL.create('postgresql+psycopg', username='pin2',
         password=os.getenv('POSTGRES_PASSWORD'), host=os.getenv('POSTGRES_HOST'), database='pin2')
 DATABASE_URL = DATABASE_URL or 'sqlite:///./pin2.db'
-kwargs = {'connect_args': {'check_same_thread': False}} if str(DATABASE_URL).startswith('sqlite') else {}
+kwargs = {'connect_args': {'check_same_thread': False, 'timeout': 30}} if str(DATABASE_URL).startswith('sqlite') else {}
 engine = create_engine(DATABASE_URL, pool_pre_ping=True, **kwargs)
+if engine.dialect.name == 'sqlite':
+    @event.listens_for(engine, 'connect')
+    def sqlite_busy_timeout(connection, _):
+        connection.execute('PRAGMA busy_timeout=30000')
 SessionLocal = sessionmaker(bind=engine, expire_on_commit=False)
 
 class Base(DeclarativeBase):
@@ -25,6 +29,9 @@ def session():
 def initialize():
     # Geometries are generated from the immutable configuration snapshot.
     # SQLite remains available for local tests and development without Docker.
+    if engine.dialect.name == 'sqlite':
+        with engine.begin() as connection:
+            connection.exec_driver_sql('PRAGMA journal_mode=WAL')
     if engine.dialect.name == 'postgresql':
         with engine.begin() as connection:
             connection.execute(text('CREATE EXTENSION IF NOT EXISTS postgis'))
