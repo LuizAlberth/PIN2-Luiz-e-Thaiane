@@ -1,12 +1,12 @@
 from contextlib import asynccontextmanager
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 import hashlib
 import os
 from typing import Literal
 from fastapi import Depends, FastAPI, HTTPException, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
-from sqlalchemy import select, func
+from sqlalchemy import select, func, or_, and_
 from sqlalchemy.orm import Session
 from .db import initialize, session
 from .models import User, Config, Reading, Event, Job, Scene, Attempt, Audit, now
@@ -16,7 +16,7 @@ from .adapters import ANAClient, CDSEClient, ProviderError, parsed_time
 from .storage import get
 from .station_reference import OFFICIAL_STATION
 from .pdc import PDCClient, live_station
-from .recent_satellite import load_latest
+from .recent_satellite import load_latest, search_period, load_search_preview, create_search_preview
 from .satellite_demo import load_pair, HISTORICAL_CONTEXT
 
 @asynccontextmanager
@@ -66,7 +66,7 @@ class ConfigIn(BaseModel):
     baseline_min_days: int = Field(default=15, ge=1, le=89)
     baseline_max_days: int = Field(default=30, ge=2, le=90)
     post_window_days: int = Field(default=15, ge=1, le=30)
-    source_mode: Literal['ANA'] = 'ANA'
+    source_mode: Literal['ANA', 'DCSC'] = 'DCSC'
 
 class ReplayIn(BaseModel):
     date: datetime | None = None
@@ -133,7 +133,7 @@ def optionally_admin(req, db):
         return False
 
 def allowed(e, admin):
-    return admin or e.status in PUBLIC
+    return admin or e.status in PUBLIC or (e.mode == 'AO_VIVO' and e.snapshot.get('source_mode') == 'DCSC')
 
 @app.get('/api/health')
 def health():
@@ -176,7 +176,8 @@ def status(db: Session = Depends(session)):
         .order_by(Event.created_at.desc()).limit(4)).all()
     collection = db.scalar(select(Job).where(Job.kind == 'COLLECT').order_by(Job.created_at.desc()).limit(1))
     integration_status = ('SIMULADA' if c.source_mode == 'DEMO' else
-        'SEM_CREDENCIAIS' if not ANAClient().ready else
+        'SEM_CREDENCIAIS' if c.source_mode == 'ANA' and not ANAClient().ready else
+        'SEM_CREDENCIAIS' if c.source_mode == 'DCSC' and not PDCClient().ready else
         'FALHA' if collection and collection.status == 'FALHOU' else
         'AGUARDANDO_DADOS' if not reading else 'DISPONIVEL')
     return {'config': config_json(c), 'reading': reading_json(reading), 'data_status': state,
@@ -208,6 +209,29 @@ def latest_satellite():
             'tile': scene['tile'], 'orbit': scene['orbit'],
             'images': {view: f'/api/satellite/latest/image/{index}?view={view}' for view in ('default', 'natural')}}
             for index, scene in enumerate(manifest['scenes'])]}
+
+@app.get('/api/satellite/search')
+def satellite_search(start: date, end: date):
+    if end < start or (end - start).days > 60 or start.year < 2017 or end > now().date():
+        raise HTTPException(422, 'Escolha um período válido de até 60 dias, entre 2017 e hoje')
+    try:
+        return search_period(start, end)
+    except ProviderError as exc:
+        raise HTTPException(503, str(exc)) from exc
+
+@app.get('/api/satellite/search/preview/{product_id}')
+def satellite_search_preview(product_id: str, view: Literal['default', 'natural'] = 'default'):
+    try:
+        preview = load_search_preview(product_id) or create_search_preview(product_id)
+        if not preview or preview.get('unavailable'):
+            raise HTTPException(404, 'Passagem encoberta no recorte ou rio não visível')
+        record = preview['images'][view]
+        blob = get(record['key'])
+        if hashlib.sha256(blob).hexdigest() != record['sha256']:
+            raise HTTPException(503, 'Arquivo corrompido')
+        return Response(blob, media_type='image/png', headers={'Cache-Control': 'public, max-age=86400'})
+    except ProviderError as exc:
+        raise HTTPException(503, str(exc)) from exc
 
 @app.get('/api/satellite/latest/image/{index}')
 def latest_satellite_image(index: int, view: Literal['default', 'natural'] = 'default'):
@@ -256,8 +280,10 @@ def historical_2023_image(role: Literal['BASELINE', 'POST_EVENT'], view: Literal
 @app.get('/api/events')
 def events(mode: Literal['AO_VIVO','SIMULACAO'] = 'AO_VIVO', page: int = 1, db: Session = Depends(session)):
     page = max(1, page)
-    q = select(Event).where(Event.mode == mode, Event.status.in_(PUBLIC))
-    total = db.scalar(select(func.count()).select_from(Event).where(Event.mode == mode, Event.status.in_(PUBLIC)))
+    visible = or_(Event.status.in_(PUBLIC), and_(Event.mode == 'AO_VIVO', Config.source_mode == 'DCSC'))
+    q = select(Event).join(Config, Event.config_id == Config.id).where(Event.mode == mode, visible)
+    total = db.scalar(select(func.count()).select_from(Event).join(Config, Event.config_id == Config.id)
+        .where(Event.mode == mode, visible))
     items = db.scalars(q.order_by(Event.created_at.desc()).offset((page-1)*20).limit(20)).all()
     return {'items': [event_json(db, e) for e in items], 'total': total, 'page': page}
 
@@ -344,6 +370,8 @@ def replay(payload: ReplayIn, db: Session = Depends(session), user: User = Depen
         if c.source_mode == 'DEMO':
             result = demo_replay(db, c)
         else:
+            if c.source_mode != 'ANA':
+                raise ValueError('Replay ANA indisponível para a configuração DCSC')
             if not payload.date: raise ValueError('Informe a data histórica para consulta ANA')
             if parsed_time(payload.date) < utc(c.threshold_valid_from):
                 raise ValueError('A data histórica é anterior à validade da cota configurada')
@@ -361,7 +389,7 @@ def replay(payload: ReplayIn, db: Session = Depends(session), user: User = Depen
 @app.post('/api/admin/collect')
 def collect(db: Session = Depends(session), user: User = Depends(current_admin)):
     c = active_config(db)
-    if not c or c.source_mode != 'ANA': raise HTTPException(422, 'Configure a integração ANA para coleta')
+    if not c or c.source_mode not in ('ANA', 'DCSC'): raise HTTPException(422, 'Configure uma integração de coleta')
     j = db.scalar(select(Job).where(Job.kind == 'COLLECT', Job.status.in_(['PENDENTE','AGUARDANDO_RETRY'])).limit(1))
     if j:
         j.scheduled_for = now()

@@ -44,7 +44,7 @@ def main():
                     logging.warning('sentinel_pair_unavailable %s', exc)
             with SessionLocal() as db:
                 config = active_config(db)
-                if config and config.source_mode == 'ANA':
+                if config and config.source_mode in ('ANA', 'DCSC'):
                     enqueue_collection(db, config)
                 did_work = work_once(db)
             if not did_work:

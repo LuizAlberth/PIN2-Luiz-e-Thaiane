@@ -22,6 +22,84 @@ from app.api import app
 from app.pdc import PDCClient, live_station
 from app import recent_satellite
 
+def test_dcsc_configuration_and_automatic_trigger(db, monkeypatch):
+    session, user = db
+    from app import service
+    instant = now()
+    baseline = [
+        {'observed_at': (instant - timedelta(minutes=6)).isoformat(), 'water_level_cm': 245,
+         'station_timestamp': None},
+        {'observed_at': (instant - timedelta(minutes=1)).isoformat(), 'water_level_cm': 250,
+         'station_timestamp': None},
+    ]
+    readings = [
+        {'observed_at': (instant + timedelta(seconds=1)).isoformat(), 'water_level_cm': 250,
+         'station_timestamp': None},
+        {'observed_at': (instant + timedelta(seconds=2)).isoformat(), 'water_level_cm': 330,
+         'station_timestamp': None},
+        {'observed_at': (instant + timedelta(seconds=3)).isoformat(), 'water_level_cm': 335,
+         'station_timestamp': None},
+    ]
+    current = {'status': 'ATUALIZADO', 'items': baseline, 'latest': baseline[-1]}
+    monkeypatch.setattr(service, 'live_station', lambda client=None: current)
+    params = {'source_mode': 'DCSC', 'station_code': 'DCSC-00043',
+        'river': 'Rio dos Índios', 'bbox': BBOX, 'threshold_cm': 300,
+        'threshold_source': 'Parâmetro experimental do projeto',
+        'threshold_valid_from': instant - timedelta(days=1),
+        'threshold_responsible': 'Equipe', 'collection_interval_min': 5,
+        'baseline_min_days': 7, 'baseline_max_days': 30, 'post_window_days': 15}
+    config = create_config(session, user.id, params)
+    assert config.version == 1 and config.source_mode == 'DCSC'
+    assert total(session, Reading) == 1
+    current['items'] = readings[:2]
+    current['latest'] = readings[1]
+    enqueue_collection(session, config)
+    assert work_once(session, ana=object())
+    assert total(session, Reading) == 3
+    assert total(session, Event) == 0  # One high value does not trigger a DCSC event.
+    current['items'] = readings
+    current['latest'] = readings[-1]
+    collect = session.scalar(select(Job).where(Job.kind == 'COLLECT'))
+    collect.scheduled_for = now() - timedelta(seconds=1)
+    session.commit()
+    assert work_once(session, ana=object())
+    assert total(session, Reading) == 4
+    assert total(session, Event) == 1
+    event = session.scalar(select(Event))
+    assert event.snapshot['source_mode'] == 'DCSC'
+    assert event.mode == 'AO_VIVO' and event.status == 'AGUARDANDO_IMAGEM'
+    assert total(session, Job) == 3
+    app.dependency_overrides[api_session] = lambda: session
+    try:
+        with TestClient(app) as client:
+            assert client.get('/api/events').json()['total'] == 1
+            detail = client.get(f'/api/events/{event.id}')
+            assert detail.status_code == 200 and not detail.json()['has_comparison']
+            assert client.get(f'/api/events/{event.id}/scene/BASELINE').status_code == 404
+    finally:
+        app.dependency_overrides.clear()
+    monkeypatch.setattr(service, 'live_station', lambda client=None: {
+        'status': 'ATRASADO', 'items': readings})
+    with pytest.raises(ValueError, match='duas leituras recentes'):
+        create_config(session, user.id, params)
+
+def test_period_search_returns_nearby_dates_only():
+    from datetime import date
+    def feature(day, tile='T22JFR'):
+        stamp = f'{day}T132251'
+        return {'id': f'S2A_MSIL2A_{stamp}_N0512_R038_{tile}_{stamp}',
+            'properties': {'datetime': f'{day[:4]}-{day[4:6]}-{day[6:]}T13:22:51Z',
+                           'eo:cloud_cover': 12.5}}
+    class Catalog:
+        ready = True
+        def search(self, bbox, start, end, collection):
+            assert bbox == BBOX and collection == 'sentinel-2-l2a'
+            return [feature('20231105'), feature('20231120'), feature('20231120', 'T22JFS')]
+    found = recent_satellite.search_period(date(2023, 11, 16), date(2023, 11, 17), Catalog())
+    assert len(found['scenes']) == 2
+    assert [scene['distance_days'] for scene in found['scenes']] == [3, 11]
+    assert all(scene['tile_cloud_percent'] == 12.5 for scene in found['scenes'])
+
 @pytest.fixture
 def db(tmp_path, monkeypatch):
     engine = create_engine('sqlite://', connect_args={'check_same_thread': False}, poolclass=StaticPool)

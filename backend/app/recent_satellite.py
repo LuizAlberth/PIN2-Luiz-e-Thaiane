@@ -3,11 +3,13 @@
 The pair is a visual comparison of two acquisition dates, not flood evidence.
 Only complete, cloud-checked pairs are published in shared object storage.
 """
-from datetime import timedelta
+from datetime import date, datetime, time, timedelta, timezone
 from io import BytesIO
 import hashlib
 import json
 import tarfile
+import re
+import threading
 
 from PIL import Image, ImageDraw
 import httpx
@@ -20,6 +22,8 @@ from .storage import get, put
 
 MANIFEST_KEY = 'latest-sentinel/manifest.json'
 COLLECTION = 'sentinel-2-l2a'
+_preview_lock = threading.Lock()
+PRODUCT_PATTERN = re.compile(r'^S2[ABC]_MSIL2A_\d{8}T\d{6}_N\d{4}_R038_T22JFR_\d{8}T\d{6}$')
 SCREEN_SCRIPT = '''//VERSION=3
 function setup() { return {input:["SCL","dataMask"], mosaicking:Mosaicking.TILE,
   output:[{id:"quality",bands:1,sampleType:"UINT8"}]}; }
@@ -132,7 +136,7 @@ def _request(client, feature, script, resolution, outputs):
     return blobs
 
 
-def _scene(client, feature):
+def _scene(client, feature, key_prefix='latest-sentinel'):
     screening = _request(client, feature, SCREEN_SCRIPT, 256, ('quality', 'userdata'))
     if _quality(screening['quality']) > 10 or _river_obscured(screening['quality']) > 10:
         return None
@@ -151,9 +155,82 @@ def _scene(client, feature):
         blob = images[view]
         if verify_png(blob) != (1024, 1024):
             raise ProviderError('Cena Sentinel-2 com dimensões inesperadas')
-        key = f'latest-sentinel/{product_id}/{view}.png'
+        key = f'{key_prefix}/{product_id}/{view}.png'
         record['images'][view] = {'key': key, 'sha256': put(key, blob)}
     return record
+
+
+def search_period(start: date, end: date, client=None):
+    """Catalog dates are discovery metadata; local visibility is checked on preview."""
+    client = client or CDSEClient()
+    if not client.ready:
+        raise ProviderError('Credenciais Copernicus não configuradas')
+    window_start = datetime.combine(start - timedelta(days=15), time.min, timezone.utc)
+    window_end = min(now(), datetime.combine(end + timedelta(days=16), time.min, timezone.utc))
+    features = client.search(BBOX, window_start, window_end, collection=COLLECTION)
+    found = []
+    seen_dates = set()
+    for feature in features:
+        product_id = feature.get('id', '').removesuffix('.SAFE')
+        if not PRODUCT_PATTERN.fullmatch(product_id):
+            continue
+        acquired = parsed_time(feature['properties']['datetime'])
+        day = acquired.date()
+        if day in seen_dates:
+            continue
+        seen_dates.add(day)
+        distance = (start - day).days if day < start else (day - end).days if day > end else 0
+        found.append({'product_id': product_id, 'acquired_at': acquired.isoformat(),
+            'distance_days': distance, 'in_period': distance == 0,
+            'tile_cloud_percent': feature['properties'].get('eo:cloud_cover')})
+    found.sort(key=lambda x: (x['distance_days'], x['acquired_at']))
+    return {'start': start.isoformat(), 'end': end.isoformat(), 'margin_days': 15,
+        'checked_at': now().isoformat(), 'scenes': found[:24],
+        'note': 'Nuvens do catálogo referem-se ao tile inteiro; a prévia verifica o rio no recorte.'}
+
+
+def load_search_preview(product_id):
+    if not PRODUCT_PATTERN.fullmatch(product_id):
+        raise ProviderError('Identificador Sentinel-2 inválido')
+    try:
+        record = json.loads(get(f'search-sentinel/{product_id}/manifest.json'))
+        if record['product_id'] != product_id:
+            return None
+        if record.get('unavailable'):
+            return record
+        for view in ('default', 'natural'):
+            image = record['images'][view]
+            blob = get(image['key'])
+            if hashlib.sha256(blob).hexdigest() != image['sha256'] or verify_png(blob) != (1024, 1024):
+                return None
+        return record
+    except (OSError, KeyError, TypeError, ValueError, BotoCoreError, ClientError):
+        return None
+
+
+def create_search_preview(product_id, client=None):
+    if not PRODUCT_PATTERN.fullmatch(product_id):
+        raise ProviderError('Identificador Sentinel-2 inválido')
+    with _preview_lock:
+        cached = load_search_preview(product_id)
+        if cached:
+            return cached
+        client = client or CDSEClient()
+        acquired = datetime.strptime(product_id.split('_')[2], '%Y%m%dT%H%M%S').replace(tzinfo=timezone.utc)
+        if acquired > now() or acquired.year < 2017:
+            raise ProviderError('Data Sentinel-2 inválida')
+        day = acquired.replace(hour=0, minute=0, second=0)
+        features = client.search(BBOX, day, day + timedelta(days=1), collection=COLLECTION)
+        feature = next((f for f in features if f.get('id', '').removesuffix('.SAFE') == product_id), None)
+        if not feature:
+            raise ProviderError('Produto não encontrado no catálogo Copernicus')
+        record = _scene(client, feature, key_prefix='search-sentinel')
+        if record is None:
+            record = {'product_id': product_id, 'unavailable': True,
+                'reason': 'Cena encoberta no recorte ou rio não visível'}
+        put(f'search-sentinel/{product_id}/manifest.json',
+            json.dumps(record, ensure_ascii=False).encode(), content_type='application/json')
+        return record
 
 
 def _rejected_preview(client, feature, existing):

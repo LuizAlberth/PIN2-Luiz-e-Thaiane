@@ -159,8 +159,20 @@ function useLiveStation() {
   }, []);
   return { live, error };
 }
-function LiveStation({ live, error, station, compact = false }) {
+function useMonitorStatus() {
+  const [status, setStatus] = useState(null);
+  useEffect(() => {
+    let active = true;
+    const load = () => api('/status').then((value) => { if (active) setStatus(value); }).catch(() => {});
+    load();
+    const timer = setInterval(load, 60000);
+    return () => { active = false; clearInterval(timer); };
+  }, []);
+  return status;
+}
+function LiveStation({ live, error, station, monitor, compact = false }) {
   const current = live?.latest;
+  const experimental = monitor?.config?.source_mode === 'DCSC';
   return (
     <section className={`live-station ${compact ? "compact" : ""}`} id={!compact ? "monitoramento" : undefined}>
       <div className="live-station-head">
@@ -183,6 +195,7 @@ function LiveStation({ live, error, station, compact = false }) {
         {!compact && <div className="live-chart">
           <span className="caps">ÚLTIMAS LEITURAS PUBLICADAS</span>
           <Graph readings={live?.items || []} threshold={null} />
+          {experimental && <small>Referência do projeto: {cm(monitor.config.threshold_cm)}. Critério experimental definido no Admin; não é cota oficial de alerta.</small>}
         </div>}
       </div>
       <div className="live-source">
@@ -904,12 +917,12 @@ function About() {
           [
             "01",
             "Coletar",
-            "O painel mostra a série pública DCSC-00043. A coleta ANA para eventos automáticos depende de credenciais e validação.",
+            "O painel coleta a série pública DCSC-00043. A referência do projeto é experimental e não substitui cota oficial.",
           ],
           [
             "02",
             "Identificar",
-            "Uma leitura válida passa de abaixo para igual ou acima da cota configurada.",
+            "Após uma leitura abaixo, duas leituras seguidas acima da referência criam um registro indicativo.",
           ],
           [
             "03",
@@ -958,15 +971,16 @@ function Admin({ open }) {
     audit: [],
     integrations: {},
   });
+  const [sourceMode, setSourceMode] = useState('DCSC');
   const [form, setForm] = useState({
-    station_code: "83372100",
-    river: "Rio Krauel",
+    station_code: "DCSC-00043",
+    river: "Rio dos Índios",
     bbox: "",
-    threshold_cm: "",
-    threshold_source: "",
+    threshold_cm: "300",
+    threshold_source: "Parâmetro experimental do projeto; não é alerta oficial",
     threshold_valid_from: new Date().toISOString().slice(0, 10),
-    threshold_responsible: "",
-    collection_interval_min: 30,
+    threshold_responsible: "Equipe do projeto",
+    collection_interval_min: 5,
     baseline_min_days: 15,
     baseline_max_days: 30,
     post_window_days: 15,
@@ -1040,7 +1054,7 @@ function Admin({ open }) {
   }
   function activate() {
     perform(async () => {
-      let bbox = form.bbox.split(",").map(Number);
+      let bbox = sourceMode === 'DCSC' ? [-49.632, -27.048, -49.610, -27.0285] : form.bbox.split(",").map(Number);
       if (bbox.length !== 4 || bbox.some((v) => !Number.isFinite(v)))
         throw Error("Informe oeste, sul, leste, norte");
       let payload = {
@@ -1054,7 +1068,9 @@ function Admin({ open }) {
         threshold_valid_from: new Date(
           `${form.threshold_valid_from}T00:00:00-03:00`,
         ).toISOString(),
-        source_mode: "ANA",
+        station_code: sourceMode === 'DCSC' ? 'DCSC-00043' : form.station_code,
+        river: sourceMode === 'DCSC' ? 'Rio dos Índios' : form.river,
+        source_mode: sourceMode,
       };
       let r = await api("/admin/configs", {
         method: "POST",
@@ -1125,6 +1141,16 @@ function Admin({ open }) {
     ["baseline_max_days", "Referência: máximo de dias antes"],
     ["post_window_days", "Janela posterior (dias)"],
   ];
+  const dcscFields = [
+    ["threshold_cm", "Referência experimental (cm)"],
+    ["threshold_source", "Origem do parâmetro"],
+    ["threshold_responsible", "Responsável pelo cadastro"],
+    ["threshold_valid_from", "Válida desde"],
+    ["collection_interval_min", "Coleta (minutos)"],
+    ["baseline_min_days", "Referência: mínimo de dias antes"],
+    ["baseline_max_days", "Referência: máximo de dias antes"],
+    ["post_window_days", "Janela posterior (dias)"],
+  ];
   return (
     <main className="container section">
       <div className="admin-head">
@@ -1184,7 +1210,7 @@ function Admin({ open }) {
                 {current?.source_mode === "DEMO"
                   ? "Simulação"
                   : current
-                    ? "ANA"
+                    ? current.source_mode
                     : "Inativa"}
               </Badge>
             </article>
@@ -1311,7 +1337,7 @@ function Admin({ open }) {
               Repetir cenário histórico
             </button>
           )}
-          {current?.source_mode === "ANA" && (
+          {['ANA', 'DCSC'].includes(current?.source_mode) && (
             <>
               <button
                 className="btn outline top-gap"
@@ -1325,6 +1351,7 @@ function Admin({ open }) {
               >
                 Coletar agora
               </button>
+              {current?.source_mode === "ANA" && <>
               <div className="replay-field">
                 <label>
                   Data histórica da ANA
@@ -1350,6 +1377,7 @@ function Admin({ open }) {
                   Executar replay
                 </button>
               </div>
+              </>}
             </>
           )}
         </>
@@ -1357,15 +1385,12 @@ function Admin({ open }) {
       {tab === "config" && (
         <div className="form-layout">
           <article className="panel">
-            <span className="caps">MODO REAL</span>
+            <span className="caps">COLETA AO VIVO</span>
             <h3>Ativar nova configuração</h3>
-            <p>
-              Este formulário ativa somente a coleta ANA. A estação DCSC-00043
-              exibida na página vem da Defesa Civil e tem outra origem.
-            </p>
-            <p className="admin-source-note">Para ativar eventos automáticos, o servidor exige credenciais ANA, uma estação fluviométrica operante com leitura válida nas últimas 48 horas e uma cota documentada. Nenhum desses dados é inventado pelo formulário.</p>
+            <label className="source-choice">Fonte de leitura<select value={sourceMode} onChange={(e) => {const mode=e.target.value;setSourceMode(mode);setForm({...form,station_code:mode==='DCSC'?'DCSC-00043':'83372100',river:mode==='DCSC'?'Rio dos Índios':'Rio Krauel',bbox:'',threshold_source:mode==='DCSC'?'Parâmetro experimental do projeto; não é alerta oficial':''});}}><option value="DCSC">Defesa Civil DCSC-00043</option><option value="ANA">ANA (requer credenciais)</option></select></label>
+            <p className="admin-source-note">{sourceMode === 'DCSC' ? 'A estação DCSC publica níveis reais. O exemplo de 300 cm é experimental: um registro indicativo exige duas leituras seguidas acima da referência após uma leitura abaixo. Não é alerta oficial. Ajuste a referência com a equipe responsável antes de uso operacional.' : 'ANA exige credenciais, estação fluviométrica operante, leitura recente e cota documentada.'}</p>
             <div className="form-grid">
-              {fields.map(([key, label]) => (
+              {(sourceMode === 'DCSC' ? dcscFields : fields).map(([key, label]) => (
                 <label
                   key={key}
                   className={
@@ -1397,24 +1422,24 @@ function Admin({ open }) {
               ))}
             </div>
             <div className="form-actions">
-              <button
+              {sourceMode === 'ANA' && <button
                 className="btn outline"
                 disabled={busy || !model.integrations.ana_configured}
                 onClick={inspect}
               >
                 Consultar estação e preencher área
-              </button>
+              </button>}
               <button
                 className="btn primary"
-                disabled={busy || !model.integrations.ana_configured}
+                disabled={busy || !(sourceMode === 'DCSC' ? model.integrations.dcsc_configured : model.integrations.ana_configured)}
                 onClick={activate}
               >
                 Validar e ativar <Icon name="arrow" size={18} />
               </button>
             </div>
-            {!model.integrations.ana_configured && (
+            {sourceMode === 'ANA' && !model.integrations.ana_configured && (
               <p className="hint">
-                Ativação indisponível neste ambiente: ANA_IDENTIFICADOR e ANA_SENHA estão vazios. O acesso Copernicus e a leitura DCSC continuam funcionando separadamente.
+                ANA_IDENTIFICADOR e ANA_SENHA estão vazios. Selecione Defesa Civil DCSC-00043 para ativar a coleta sem ANA.
               </p>
             )}
           </article>
@@ -1595,6 +1620,42 @@ function RecentCompare({ pair, error }) {
   );
 }
 
+function PeriodSearch() {
+  const [start, setStart] = useState('');
+  const [end, setEnd] = useState('');
+  const [results, setResults] = useState(null);
+  const [selected, setSelected] = useState(null);
+  const [loading, setLoading] = useState(false);
+  const [message, setMessage] = useState('');
+  const [view, setView] = useState('default');
+  async function submit(event) {
+    event.preventDefault();
+    setLoading(true); setMessage(''); setResults(null); setSelected(null);
+    try {
+      const data = await api(`/satellite/search?start=${start}&end=${end}`);
+      setResults(data);
+      if (!data.scenes.length) setMessage('Nenhuma passagem encontrada neste período ou até 15 dias ao redor.');
+    } catch (error) { setMessage(error.message); }
+    finally { setLoading(false); }
+  }
+  const preview = selected && `/api/satellite/search/preview/${encodeURIComponent(selected.product_id)}?view=${view}`;
+  return <section className="period-search" aria-labelledby="period-title">
+    <div className="landing-section-head"><div><span className="caps">ACERVO COPERNICUS</span><h2 id="period-title">Buscar outras datas</h2><p>Informe um período de até 60 dias. A busca inclui passagens até 15 dias antes e depois.</p></div></div>
+    <form className="period-form" onSubmit={submit}>
+      <label>De<input type="date" value={start} max={new Date().toISOString().slice(0,10)} required onChange={(e) => setStart(e.target.value)} /></label>
+      <label>Até<input type="date" value={end} max={new Date().toISOString().slice(0,10)} required onChange={(e) => setEnd(e.target.value)} /></label>
+      <button className="btn primary" disabled={loading}>{loading ? 'Consultando…' : 'Buscar passagens'}</button>
+    </form>
+    {message && <p className="data-message" role="status">{message}</p>}
+    {results && <><p className="search-note">{results.scenes.length} datas encontradas. A porcentagem de nuvens é do tile inteiro; abra uma prévia para verificar o rio no recorte.</p>
+      <div className="search-results">{results.scenes.map((scene) => <button key={scene.product_id} className={selected?.product_id === scene.product_id ? 'selected' : ''} onClick={() => {setSelected(scene); setMessage(''); setView('default');}}>
+        <strong>{date(scene.acquired_at, {dateStyle:'medium'})}</strong><span>{scene.in_period ? 'No período' : `${scene.distance_days} dia(s) do período`}</span><small>{scene.tile_cloud_percent == null ? 'Nuvens não informadas' : `${scene.tile_cloud_percent}% nuvens no tile`}</small>
+      </button>)}</div>
+      {selected && <div className="search-preview"><div><strong>Prévia de {date(selected.acquired_at, {dateStyle:'medium'})}</strong><div className="segmented"><button className={view === 'default' ? 'active' : ''} onClick={() => setView('default')}>Água destacada</button><button className={view === 'natural' ? 'active' : ''} onClick={() => setView('natural')}>Cor natural</button></div></div><p>O sistema só mostra a imagem se o rio estiver visível e até 10% do recorte e do corredor estiver encoberto.</p><a href={preview} target="_blank" rel="noreferrer"><img key={preview} src={preview} alt={`Rio dos Índios em ${date(selected.acquired_at, {dateStyle:'medium'})}`} onError={(e) => {e.currentTarget.closest('.search-preview').classList.add('unavailable');}} onLoad={(e) => {e.currentTarget.closest('.search-preview').classList.remove('unavailable');}} /></a><small className="preview-unavailable">Prévia indisponível: cena encoberta ou rio sem visibilidade neste recorte. Escolha outra data.</small><small>Produto: {selected.product_id}</small></div>}
+    </>}
+  </section>;
+}
+
 function CaseModal({ id, onClose }) {
   const [caseData, setCaseData] = useState(null);
   const [error, setError] = useState("");
@@ -1612,10 +1673,11 @@ function CaseModal({ id, onClose }) {
     <div className="case-dialog" role="dialog" aria-modal="true" aria-labelledby="case-title">
       <button className="case-close" onClick={onClose} aria-label="Fechar detalhes">×</button>
       {error ? <p className="error">{error}</p> : !caseData ? <p>Carregando registro…</p> : <>
-        <span className="caps">{caseData.mode === "SIMULACAO" ? "CURIOSIDADE HISTÓRICA · COTAS SIMULADAS" : "EVENTO MONITORADO"}</span>
+        <span className="caps">{caseData.mode === "SIMULACAO" ? "CURIOSIDADE HISTÓRICA · COTAS SIMULADAS" : caseData.source_mode === 'DCSC' ? 'REGISTRO INDICATIVO · DCSC' : "EVENTO MONITORADO"}</span>
         <h2 id="case-title">{context?.title || "Registro de evento"}</h2>
         <p>{context?.summary || `${caseData.station_name} · ${date(caseData.started_at)}`}</p>
         {caseData.mode === "SIMULACAO" && <p className="case-caution">A ocorrência foi documentada, mas as cotas deste replay são didáticas. As imagens mostram datas próximas, não o pico da enchente.</p>}
+        {caseData.source_mode === 'DCSC' && <p className="case-caution">Gatilho calculado a partir de leitura pública e referência experimental do projeto. Não é alerta oficial da Defesa Civil.</p>}
         {caseData.scenes.BASELINE?.has_natural && caseData.scenes.POST_EVENT?.has_natural && <div className="segmented" aria-label="Visualização histórica">
           <button className={view === "default" ? "active" : ""} onClick={() => setView("default")}>Água destacada</button>
           <button className={view === "natural" ? "active" : ""} onClick={() => setView("natural")}>Cor natural</button>
@@ -1626,6 +1688,8 @@ function CaseModal({ id, onClose }) {
             return scene && <figure key={role}><a href={sceneUrl(scene, view)} target="_blank" rel="noreferrer"><img src={sceneUrl(scene, view)} alt={`${label}: rio e entorno em ${date(scene.acquired_at, { dateStyle: "medium" })}`} /></a><figcaption>{label} · {date(scene.acquired_at, { dateStyle: "medium" })}</figcaption></figure>;
           })}
         </div>
+        {!caseData.scenes.BASELINE && !caseData.scenes.POST_EVENT && <p className="data-message">Gatilho registrado. As imagens Sentinel-1 do período ainda estão em processamento ou indisponíveis.</p>}
+        {caseData.failure_summary && <p className="data-message">{caseData.failure_summary}</p>}
         {context?.sources && <div className="case-sources">{context.sources.map((source) => <a key={source.url} href={source.url} target="_blank" rel="noreferrer">{source.title} ↗</a>)}</div>}
       </>}
     </div>
@@ -1634,12 +1698,17 @@ function CaseModal({ id, onClose }) {
 
 function App() {
   const { live, error: liveError } = useLiveStation();
+  const monitor = useMonitorStatus();
   const { pair, error: pairError } = useRecentSatellite();
   const [realEvents, setRealEvents] = useState([]);
   const [openCase, setOpenCase] = useState(null);
   const [showAdmin, setShowAdmin] = useState(false);
   useEffect(() => {
-    api('/events?mode=AO_VIVO').then((value) => setRealEvents(value.items)).catch(() => {});
+    let active = true;
+    const load = () => api('/events?mode=AO_VIVO').then((value) => { if (active) setRealEvents(value.items); }).catch(() => {});
+    load();
+    const timer = setInterval(load, 60000);
+    return () => { active = false; clearInterval(timer); };
   }, []);
   const closeCase = React.useCallback(() => setOpenCase(null), []);
   return <>
@@ -1649,7 +1718,7 @@ function App() {
     </div></header>
     <main>
       <section className="landing-intro"><div className="container"><span className="caps">MONITORAMENTO FLUVIAL · ÁREA DE ESTUDO</span><h1>Rio dos Índios, Presidente Getúlio</h1><p>Veja o nível publicado pela Defesa Civil e compare as passagens de satélite mais recentes com o rio visível.</p></div></section>
-      <div className="container landing-content"><LiveStation live={live} error={liveError} station={live?.station} /><RecentCompare pair={pair} error={pairError} />
+      <div className="container landing-content"><LiveStation live={live} error={liveError} station={live?.station} monitor={monitor} /><RecentCompare pair={pair} error={pairError} /><PeriodSearch />
         {realEvents.length > 0 && <section className="landing-events" id="eventos"><div className="landing-section-head"><div><span className="caps">REGISTROS</span><h2>Eventos monitorados</h2></div></div><div className="event-grid">{realEvents.slice(0, 3).map((event) => <EventCard key={event.id} item={event} open={setOpenCase} />)}</div></section>}
         <section className="landing-history" id="historia"><div><span className="caps">CURIOSIDADE HISTÓRICA</span><h2>Enchente de novembro de 2023</h2><p>Um episódio documentado com imagens Sentinel-2 de antes e depois. Os níveis do replay são simulados.</p><button className="btn ghost" onClick={() => setOpenCase('history-2023')}>Ver história e imagens <Icon name="arrow" size={17} /></button></div><img src="/api/historical/2023/image/BASELINE?view=default" alt="Vista de Presidente Getúlio antes da enchente de 2023" /></section>
         <section className="landing-method" id="sobre"><span className="caps">COMO LER O PAINEL</span><p>O nível vem da estação DCSC-00043 reproduzida pelo <a href="https://pdc.presidentegetulio.sc.gov.br/monitoramento" target="_blank" rel="noreferrer">portal municipal</a>. As imagens vêm do Copernicus. Diferenças visuais não confirmam uma inundação nem substituem alertas oficiais.</p></section>

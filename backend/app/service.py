@@ -7,6 +7,8 @@ from .models import Config, Reading, Event, Job, Scene, Attempt, Audit, now
 from .adapters import ANAClient, CDSEClient, ProviderError, parsed_time, verify_png
 from .satellite_demo import BBOX as DEMO_BBOX, TRIGGER as DEMO_TRIGGER, HISTORICAL_CONTEXT, load_pair
 from .storage import put
+from .pdc import PDCClient, live_station
+from .station_reference import OFFICIAL_STATION
 import logging
 import time
 
@@ -47,23 +49,36 @@ def create_config(db, actor_id, data, ana=None):
         raise ValueError('Cota positiva, fonte e responsável são obrigatórios')
     if not (5 <= data['collection_interval_min'] <= 1440 and 0 < data['baseline_min_days'] < data['baseline_max_days'] <= 90 and 0 < data['post_window_days'] <= 30):
         raise ValueError('Intervalo ou janelas inválidas')
-    if data['source_mode'] != 'ANA':
-        raise ValueError('Configuração de produção exige fonte ANA; use o botão de demonstração para dados fictícios')
-    ana = ana or ANAClient()
-    station = ana.station(data['station_code'])
-    if not station:
-        raise ValueError('Estação não encontrada no inventário ANA')
-    station_type = unicodedata.normalize('NFKD', str(station.get('Tipo_Estacao') or ''))
-    station_type = ''.join(c for c in station_type if not unicodedata.combining(c)).lower()
-    if str(station.get('Operando')) != '1' or not station_type.startswith('fluviometrica'):
-        raise ValueError('A estação precisa estar operante e classificada como fluviométrica no inventário ANA')
-    # Presence in the telemetric series is also checked: an inventory entry alone is insufficient.
-    readings = ana.readings(data['station_code'])
-    if not has_recent_valid_level(readings):
-        raise ValueError('Estação sem cota telemétrica válida nas últimas 48 horas; ativação bloqueada')
-    lat = float(station.get('Latitude'))
-    lon = float(station.get('Longitude'))
-    validate_area(data['bbox'], lat, lon)
+    if data['source_mode'] == 'DCSC':
+        live = live_station(client=ana or PDCClient())
+        recent = [row for row in live['items'] if timedelta(0) <= now() - parsed_time(row['observed_at']) <= timedelta(minutes=30)]
+        if live['status'] != 'ATUALIZADO' or len(recent) < 2:
+            raise ValueError('Estação DCSC sem duas leituras recentes; ativação bloqueada')
+        if data['station_code'] != OFFICIAL_STATION['code']:
+            raise ValueError('Somente a estação DCSC-00043 está integrada')
+        if data['bbox'] != DEMO_BBOX:
+            raise ValueError('A área DCSC deve ser o recorte validado do Rio dos Índios')
+        lat = (DEMO_BBOX[1] + DEMO_BBOX[3]) / 2
+        lon = (DEMO_BBOX[0] + DEMO_BBOX[2]) / 2
+        station_name = OFFICIAL_STATION['name']
+    elif data['source_mode'] == 'ANA':
+        ana = ana or ANAClient()
+        station = ana.station(data['station_code'])
+        if not station:
+            raise ValueError('Estação não encontrada no inventário ANA')
+        station_type = unicodedata.normalize('NFKD', str(station.get('Tipo_Estacao') or ''))
+        station_type = ''.join(c for c in station_type if not unicodedata.combining(c)).lower()
+        if str(station.get('Operando')) != '1' or not station_type.startswith('fluviometrica'):
+            raise ValueError('A estação precisa estar operante e classificada como fluviométrica no inventário ANA')
+        readings = ana.readings(data['station_code'])
+        if not has_recent_valid_level(readings):
+            raise ValueError('Estação sem cota telemétrica válida nas últimas 48 horas; ativação bloqueada')
+        lat = float(station.get('Latitude'))
+        lon = float(station.get('Longitude'))
+        validate_area(data['bbox'], lat, lon)
+        station_name = station.get('Estacao_Nome') or data['station_code']
+    else:
+        raise ValueError('Fonte de monitoramento inválida')
     previous = active_config(db)
     instant = now()
     if previous:
@@ -71,16 +86,27 @@ def create_config(db, actor_id, data, ana=None):
         previous.valid_to = instant
     version = (db.scalar(select(func.max(Config.version))) or 0) + 1
     config = Config(version=version, station_code=data['station_code'],
-        station_name=station.get('Estacao_Nome') or data['station_code'], river=data.get('river') or 'Rio Krauel',
+        station_name=station_name, river=data.get('river') or 'Rio dos Índios',
         station_lat=lat, station_lon=lon, bbox=data['bbox'],
         threshold_cm=data['threshold_cm'], threshold_source=data['threshold_source'],
         threshold_valid_from=parsed_time(data['threshold_valid_from']),
         threshold_responsible=data['threshold_responsible'],
         collection_interval_min=data['collection_interval_min'], baseline_min_days=data['baseline_min_days'],
         baseline_max_days=data['baseline_max_days'], post_window_days=data['post_window_days'],
-        source_mode='ANA', active=True, valid_from=instant, created_by=actor_id)
+        source_mode=data['source_mode'], active=True, valid_from=instant, created_by=actor_id)
     db.add(config)
     db.flush()
+    if config.source_mode == 'DCSC':
+        latest = live['latest'] if live.get('latest') else live['items'][0]
+        published = parsed_time(latest['observed_at'])
+        existing_reading = db.scalar(select(Reading).where(Reading.station_code == config.station_code,
+            Reading.observed_at == published, Reading.mode == 'AO_VIVO'))
+        if not existing_reading:
+            db.add(Reading(station_code=config.station_code, observed_at=published,
+                water_level_cm=latest['water_level_cm'], quality_status='VALIDA',
+                raw_payload={'provider': 'PDC/DCSC', 'activation_baseline': True,
+                    'station_timestamp': latest.get('station_timestamp')},
+                correlation_id=str(uuid4()), mode='AO_VIVO'))
     audit(db, actor_id, 'CONFIG_ATIVADA', config.id, {'version': version, 'station': config.station_code,
         'threshold_cm': config.threshold_cm, 'source': config.threshold_source})
     db.commit()
@@ -90,7 +116,7 @@ def demo_config(db, actor_id):
     previous = active_config(db)
     instant = now()
     # A demonstration must never switch off a running ANA monitor.
-    keep_live = bool(previous and previous.source_mode == 'ANA')
+    keep_live = bool(previous and previous.source_mode in ('ANA', 'DCSC'))
     if previous and not keep_live:
         previous.active = False
         previous.valid_to = instant
@@ -145,7 +171,17 @@ def ingest(db: Session, config: Config, readings: list[dict], mode='AO_VIVO', co
                     open_event.ended_at = observed
             else:
                 open_event.below_streak = 0
-        if previous and previous.water_level_cm < config.threshold_cm <= reading.water_level_cm and not open_event:
+        crossed = bool(previous and previous.water_level_cm < config.threshold_cm <= reading.water_level_cm)
+        if config.source_mode == 'DCSC' and previous and reading.water_level_cm >= config.threshold_cm:
+            before_previous = db.scalar(select(Reading).where(Reading.station_code == config.station_code,
+                Reading.mode == mode, Reading.observed_at < previous.observed_at,
+                Reading.quality_status == 'VALIDA', Reading.water_level_cm.is_not(None))
+                .order_by(Reading.observed_at.desc()).limit(1))
+            crossed = bool(before_previous and before_previous.water_level_cm < config.threshold_cm
+                and previous.water_level_cm >= config.threshold_cm
+                and observed - utc(previous.observed_at) <= timedelta(minutes=30)
+                and utc(previous.observed_at) - utc(before_previous.observed_at) <= timedelta(minutes=30))
+        if crossed and not open_event:
             event = Event(config_id=config.id, trigger_reading_id=reading.id,
                 trigger_level_cm=reading.water_level_cm, started_at=observed, mode=mode,
                 status='AGUARDANDO_IMAGEM', snapshot={
@@ -179,9 +215,14 @@ def demo_replay(db, config):
     return result
 
 def enqueue_collection(db, config):
-    # A failed collection stays failed until an administrator explicitly requests a new attempt.
-    due = db.scalar(select(Job).where(Job.kind == 'COLLECT'))
-    if not due:
+    # Reuse a queued job, but let a newly activated configuration recover a failed collector.
+    due = db.scalar(select(Job).where(Job.kind == 'COLLECT').order_by(Job.created_at.desc()).limit(1))
+    if due and due.status == 'FALHOU' and config.source_mode == 'DCSC' and utc(due.scheduled_for) <= now():
+        due.status = 'PENDENTE'
+        due.attempts = 0
+        due.scheduled_for = now()
+        db.commit()
+    elif not due:
         db.add(Job(kind='COLLECT', scheduled_for=now(), correlation_id=str(uuid4())))
         db.commit()
 
@@ -217,13 +258,21 @@ def update_event(db, event):
 
 def run_job(db, job, ana=None, cdse=None):
     begin = time.monotonic()
-    provider = 'ANA' if job.kind == 'COLLECT' else 'CDSE'
+    provider = (active_config(db).source_mode if active_config(db) else 'DCSC') if job.kind == 'COLLECT' else 'CDSE'
     try:
         if job.kind == 'COLLECT':
             config = active_config(db)
-            if config and config.source_mode == 'ANA':
-                ana = ana or ANAClient()
-                ingest(db, config, ana.readings(config.station_code, window='DIAS_2'), 'AO_VIVO', job.correlation_id)
+            if config and config.source_mode in ('ANA', 'DCSC'):
+                if config.source_mode == 'ANA':
+                    readings = (ana or ANAClient()).readings(config.station_code, window='DIAS_2')
+                else:
+                    live = live_station(client=ana or PDCClient())
+                    if live['status'] != 'ATUALIZADO':
+                        raise ProviderError('Leitura DCSC atrasada ou indisponível')
+                    readings = [{'observed_at': row['observed_at'], 'level_cm': row['water_level_cm'],
+                        'quality': 'VALIDA', 'raw': {'provider': 'PDC/DCSC', 'station_timestamp': row['station_timestamp']}}
+                        for row in live['items']]
+                ingest(db, config, readings, 'AO_VIVO', job.correlation_id)
                 job.scheduled_for = now() + timedelta(minutes=config.collection_interval_min)
                 job.status = 'PENDENTE'
             else:
