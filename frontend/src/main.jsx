@@ -618,7 +618,7 @@ function ZoomableImage({ url, alt, roads, bbox, selectedRoads = [], onToggleRoad
     element.scrollTop = drag.current.top - (event.clientY - drag.current.y);
   }
   return <div className="image-viewer">
-    <div className="image-viewer-toolbar" aria-label="Ampliação interativa"><span>Visualizar</span>{[1, 2, 4].map((value) => <button key={value} type="button" aria-pressed={scale === value} className={scale === value ? 'active' : ''} onClick={() => setScale(value)}>{value}×</button>)}<small>{scale > 1 ? 'Arraste para explorar' : 'Amplie para examinar'}</small></div>
+    <div className="image-viewer-toolbar" aria-label="Ampliação interativa"><span>Visualizar</span>{[1, 2, 4].map((value) => <button key={value} type="button" aria-pressed={scale === value} className={scale === value ? 'active' : ''} onClick={() => setScale(value)}>{value === 1 ? 'Ajustar à tela' : `${value}×`}</button>)}<small>{scale > 1 ? 'Arraste para explorar' : 'Amplie para examinar'}</small></div>
     <div className={`image-viewport ${scale > 1 ? 'is-zoomed' : ''}`} ref={viewport} onPointerDown={startDrag} onPointerMove={moveDrag} onPointerUp={() => { drag.current = null; }} onPointerCancel={() => { drag.current = null; }}>
       <div className="image-canvas" style={{ width: `${scale * 100}%` }}>
         <img src={scaledImageUrl(url, scale)} alt={alt} onLoad={() => onAvailability?.(true)} onError={() => onAvailability?.(false)} />
@@ -1681,7 +1681,7 @@ function RecentCompare({ pair, error }) {
           </div>
           <div className="segmented" aria-label="Modo de comparação">
             <button className={!overlay ? "active" : ""} onClick={() => setOverlay(false)}>Lado a lado</button>
-            <button className={overlay ? "active" : ""} onClick={() => setOverlay(true)}>Sobrepor</button>
+            <button className={overlay ? "active" : ""} onClick={() => { setOverlay(true); setOverlayScale(1); }}>Sobrepor</button>
           </div>
         </div>}
       </div>
@@ -1689,7 +1689,7 @@ function RecentCompare({ pair, error }) {
         : !pair.available ? <p className="data-message">{pair.reason}</p>
         : <>
           {overlay ? <div className="latest-overlay">
-            <div className="image-viewer-toolbar" aria-label="Ampliação da sobreposição"><span>Visualizar</span>{[1, 2, 4].map((value) => <button key={value} type="button" aria-pressed={overlayScale === value} className={overlayScale === value ? 'active' : ''} onClick={() => setOverlayScale(value)}>{value}×</button>)}<small>{overlayScale > 1 ? 'Arraste para explorar' : 'Amplie para examinar'}</small></div>
+            <div className="image-viewer-toolbar" aria-label="Ampliação da sobreposição"><span>Visualizar</span>{[1, 2, 4].map((value) => <button key={value} type="button" aria-pressed={overlayScale === value} className={overlayScale === value ? 'active' : ''} onClick={() => setOverlayScale(value)}>{value === 1 ? 'Ajustar à tela' : `${value}×`}</button>)}</div>
             <div className={`latest-overlay-viewport ${overlayScale > 1 ? 'is-zoomed' : ''}`} ref={overlayViewport}
               onPointerDown={(event) => { if (overlayScale === 1) return; const el = overlayViewport.current; overlayDrag.current = { x: event.clientX, y: event.clientY, left: el.scrollLeft, top: el.scrollTop }; el.setPointerCapture(event.pointerId); }}
               onPointerMove={(event) => { if (!overlayDrag.current) return; const el = overlayViewport.current; el.scrollLeft = overlayDrag.current.left - (event.clientX - overlayDrag.current.x); el.scrollTop = overlayDrag.current.top - (event.clientY - overlayDrag.current.y); }}

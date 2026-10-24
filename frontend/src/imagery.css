@@ -4,6 +4,8 @@
 .image-viewer-toolbar button { border: 1px solid var(--line); border-radius: 4px; background: #fff; color: var(--ink); cursor: pointer; font-size: 12px; font-weight: 700; min-width: 35px; padding: 5px 8px; }
 .image-viewer-toolbar button.active { background: #17394d; color: #fff; border-color: #17394d; }
 .image-viewer-toolbar small { color: var(--muted); margin-left: auto; }
+.latest-overlay { width: min(100%, max(240px, calc(100vh - 365px)), 540px); max-width: 540px; }
+.latest-overlay .image-viewer-toolbar { position: sticky; top: 88px; z-index: 5; padding: 7px; background: #f2f5f5; border: 1px solid var(--line); border-radius: 4px; }
 .image-viewport { position: relative; width: 100%; aspect-ratio: 1; overflow: auto; background: #e8edef; scrollbar-width: thin; }
 .image-viewport.is-zoomed { cursor: grab; }
 .image-viewport.is-zoomed:active { cursor: grabbing; }
@@ -42,3 +44,7 @@
 .impact-list li button { border: 0; background: transparent; color: #8a3929; cursor: pointer; font-size: 12px; text-decoration: underline; }
 .impact-local-note { display: block; color: var(--muted); margin-top: 7px; }
 @media (max-width: 700px) { .impact-add { flex-wrap: wrap; } .impact-add select, .impact-add input { flex-basis: 100%; } }
+@media (max-width: 620px) {
+  .latest-overlay { width: min(100%, max(200px, calc(100vh - 565px))); }
+  .latest-overlay .image-viewer-toolbar { top: 120px; }
+}
