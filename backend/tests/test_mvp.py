@@ -12,7 +12,7 @@ from sqlalchemy.pool import StaticPool
 from fastapi.testclient import TestClient
 from app.db import Base, session as api_session
 from app.models import User, Config, Reading, Event, Job, Scene, Attempt, now
-from app.security import hash_password
+from app.security import hash_password, sign
 from app.service import demo_config, demo_replay, ingest, work_once, reprocess, update_event, enqueue_collection, create_config
 from app.adapters import ANAClient, CDSEClient, ProviderError
 from app.satellite_demo import load_pair, TRIGGER, BBOX
@@ -250,6 +250,66 @@ def test_collection_stops_after_three_failures_until_manual_action(db):
     enqueue_collection(session,c)
     assert total(session,Job)==1
     assert not work_once(session,ana=BadANA())
+
+def test_dcsc_failed_collector_stays_stopped_until_explicit_restart(db):
+    session, user = db
+    config = demo_config(session, user.id)
+    config.source_mode = 'DCSC'
+    session.commit()
+    enqueue_collection(session, config)
+    job = session.scalar(select(Job).where(Job.kind == 'COLLECT'))
+    job.status = 'FALHOU'
+    job.attempts = 3
+    session.commit()
+    enqueue_collection(session, config)
+    assert job.status == 'FALHOU' and job.attempts == 3
+    enqueue_collection(session, config, restart_failed=True)
+    assert job.status == 'PENDENTE' and job.attempts == 0
+
+def test_manual_collection_reuses_job_and_reports_what_happened(db, monkeypatch):
+    session, user = db
+    config = demo_config(session, user.id)
+    config.source_mode = 'DCSC'
+    session.commit()
+    enqueue_collection(session, config)
+    job = session.scalar(select(Job).where(Job.kind == 'COLLECT'))
+    observed = now() + timedelta(seconds=1)
+    from app import service
+    monkeypatch.setattr(service, 'live_station', lambda client=None: {'status': 'ATUALIZADO',
+        'items': [{'observed_at': observed.isoformat(), 'water_level_cm': 191,
+            'station_timestamp': None}]})
+    app.dependency_overrides[api_session] = lambda: session
+    headers = {'Authorization': f'Bearer {sign(user.id)}'}
+    try:
+        with TestClient(app) as client:
+            queued = client.post('/api/admin/collect', headers=headers)
+            assert queued.status_code == 200
+            assert queued.json()['job_id'] == job.id
+            assert queued.json()['status'] == 'PENDENTE'
+            assert total(session, Job) == 1
+            assert work_once(session, ana=object())
+            listed = client.get('/api/admin/jobs', headers=headers).json()
+            assert listed[0]['created_at'] and listed[0]['last_attempt_at']
+            assert listed[0]['last_result']['inserted'] == 1
+            assert listed[0]['last_result']['events_created'] == []
+            assert listed[0]['last_result']['latest_level_cm'] == 191
+            assert listed[0]['last_result']['threshold_cm'] == 300
+            assert total(session, Event) == 0
+            job.status = 'EM_EXECUCAO'
+            session.commit()
+            ongoing = client.post('/api/admin/collect', headers=headers)
+            assert ongoing.json()['job_id'] == job.id
+            assert ongoing.json()['already_running'] is True
+            assert total(session, Job) == 1
+            job.status = 'FALHOU'
+            job.attempts = 3
+            session.commit()
+            restarted = client.post('/api/admin/collect', headers=headers)
+            assert restarted.json()['job_id'] == job.id
+            assert restarted.json()['status'] == 'PENDENTE'
+            assert job.attempts == 0 and total(session, Job) == 1
+    finally:
+        app.dependency_overrides.clear()
 
 def test_ana_normalization_and_token_reuse(monkeypatch):
     monkeypatch.setenv('ANA_IDENTIFICADOR','identificador');monkeypatch.setenv('ANA_SENHA','senha')

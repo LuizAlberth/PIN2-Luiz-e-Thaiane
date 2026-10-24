@@ -1,6 +1,7 @@
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 import "./style.css";
+import "./imagery.css";
 const api = async (path, options = {}) => {
   const token = sessionStorage.getItem("pin2_token"),
     r = await fetch(`/api${path}`, {
@@ -190,14 +191,15 @@ function LiveStation({ live, error, station, monitor, compact = false }) {
           <span className={`data-state ${live?.status === "ATUALIZADO" ? "fresh" : ""}`}>
             {live?.status === "ATUALIZADO" ? "Leitura recente" : live?.status === "ATRASADO" ? "Leitura antiga" : "Sem leitura"}
           </span>
-          <small>{current ? `Publicado em ${date(current.observed_at)}` : error || "Consultando fonte municipal…"}</small>
+          <small>{current ? `Publicado em ${date(current.observed_at)}` : "Consultando fonte municipal…"}</small>
         </div>
         {!compact && <div className="live-chart">
-          <span className="caps">ÚLTIMAS LEITURAS PUBLICADAS</span>
+          <span className="caps">COMO O NÍVEL DO RIO MUDOU</span>
           <Graph readings={live?.items || []} threshold={null} />
-          {experimental && <small>Referência do projeto: {cm(monitor.config.threshold_cm)}. Critério experimental definido no Admin; não é cota oficial de alerta.</small>}
+          {experimental && <small>Referência do projeto: {meters(monitor.config.threshold_cm)}. Critério experimental definido no Admin; não é cota oficial de alerta.</small>}
         </div>}
       </div>
+      {error && !current && <div className="error inline-error" role="alert"><strong>Leitura indisponível.</strong> {error}</div>}
       <div className="live-source">
         <span>Fonte: dados DCSC-00043 reproduzidos pelo portal municipal. Horário acima é o de publicação na base.</span>
         <a href={station?.url || "https://monitoramento.defesacivil.sc.gov.br/estacao/DCSC-00043"} target="_blank" rel="noopener noreferrer">Estação original ↗</a>
@@ -241,31 +243,38 @@ function Graph({ readings, threshold }) {
   if (pts.length < 2)
     return (
       <div className="graph-empty">
-        As próximas leituras formarão o gráfico de evolução.
+        Ainda não há duas leituras com nível para mostrar a evolução.
       </div>
     );
   let vals = pts.map((x) => x.water_level_cm),
-    lo = Math.min(...vals, threshold ?? Infinity) - 20,
-    hi = Math.max(...vals, threshold ?? -Infinity) + 20,
+    observedMin = Math.min(...vals, threshold ?? Infinity),
+    observedMax = Math.max(...vals, threshold ?? -Infinity),
+    padding = Math.max(10, (observedMax - observedMin) * 0.12),
+    lo = observedMin - padding,
+    hi = observedMax + padding,
     span = hi - lo || 1,
     startTime = new Date(pts[0].observed_at).getTime(),
     timeSpan =
       new Date(pts[pts.length - 1].observed_at).getTime() - startTime || 1,
     coords = pts.map((p) => [
-      24 + ((new Date(p.observed_at).getTime() - startTime) * 552) / timeSpan,
-      180 - ((p.water_level_cm - lo) / span) * 140,
+      66 + ((new Date(p.observed_at).getTime() - startTime) * 514) / timeSpan,
+      168 - ((p.water_level_cm - lo) / span) * 128,
     ]),
     path = coords
       .map(([x, y], i) => `${i ? "L" : "M"}${x.toFixed(1)} ${y.toFixed(1)}`)
       .join(" "),
-    ty = 180 - ((threshold - lo) / span) * 140;
+    ty = 168 - ((threshold - lo) / span) * 128,
+    change = pts.at(-1).water_level_cm - pts[0].water_level_cm,
+    trend = change > 0.5 ? `Subiu ${cm(change)}` : change < -0.5 ? `Baixou ${cm(-change)}` : "Permaneceu estável",
+    levelAt = (y) => meters(lo + ((168 - y) / 128) * span);
   return (
     <>
+      <div className="graph-summary"><strong>{trend}</strong><span>nas leituras exibidas</span></div>
       <svg
         className="graph"
         viewBox="0 0 600 210"
         role="img"
-        aria-label={threshold == null ? "Evolução das leituras" : "Evolução das leituras e cota de referência"}
+        aria-label={`Evolução do nível do rio, em metros. ${trend}.${threshold == null ? "" : ` Referência de ${meters(threshold)}.`}`}
       >
         <defs>
           <linearGradient id="g" x2="0" y2="1">
@@ -273,22 +282,15 @@ function Graph({ readings, threshold }) {
             <stop offset="1" stopColor="#2365aa" stopOpacity="0" />
           </linearGradient>
         </defs>
-        {[40, 85, 130, 180].map((y) => (
-          <line
-            key={y}
-            x1="24"
-            x2="576"
-            y1={y}
-            y2={y}
-            stroke="#e2eae7"
-            strokeDasharray="4 6"
-          />
-        ))}
+        {[40, 104, 168].map((y) => <g key={y}>
+          <text x="4" y={y + 4} fill="#52646b" fontSize="11">{levelAt(y)}</text>
+          <line x1="66" x2="580" y1={y} y2={y} stroke="#dce4e6" strokeDasharray="4 6" />
+        </g>)}
         {threshold != null && <>
-          <line x1="24" x2="576" y1={ty} y2={ty} stroke="#ae8057" strokeDasharray="6 4" />
-          <text x="575" y={Math.max(13, ty - 7)} textAnchor="end" fill="#86613d" fontSize="12">Cota {cm(threshold)}</text>
+          <line x1="66" x2="580" y1={ty} y2={ty} stroke="#8f6a50" strokeDasharray="6 4" />
+          <text x="578" y={Math.max(13, ty - 7)} textAnchor="end" fill="#76563d" fontSize="12">Referência {meters(threshold)}</text>
         </>}
-        <path d={`${path} L576 195 L24 195 Z`} fill="url(#g)" />
+        <path d={`${path} L580 168 L66 168 Z`} fill="url(#g)" />
         <path
           d={path}
           fill="none"
@@ -305,7 +307,7 @@ function Graph({ readings, threshold }) {
             fill="white"
             stroke="#2365aa"
             strokeWidth="2"
-          />
+          ><title>{`${date(pts[i].observed_at)}: ${meters(pts[i].water_level_cm)}`}</title></circle>
         ))}
       </svg>
       <div className="graph-axis">
@@ -326,6 +328,7 @@ function Graph({ readings, threshold }) {
           })}
         </span>
       </div>
+      <p className="graph-guide">Linha mais alta = nível do rio mais alto. Valores em metros.</p>
     </>
   );
 }
@@ -573,15 +576,56 @@ function DownloadLinks({ url, name }) {
     <a key={scale} href={`${url}${url.includes('?') ? '&' : '?'}scale=${scale}`} download={`${name}-${scale}x.png`}>{scale === 1 ? 'Original' : `${scale}×`}</a>)}
   </div>;
 }
-function RiverOverlay({ gis, bbox }) {
-  if (!gis || !bbox || bbox.some((value, index) => value !== gis.bbox[index])) return null;
+function scaledImageUrl(url, scale) {
+  return `${url}${url.includes('?') ? '&' : '?'}scale=${scale}`;
+}
+function roadPaths(road, bbox) {
   const [west, south, east, north] = bbox;
-  const lines = gis.features.flatMap((feature) => feature.geometry.type === 'LineString'
-    ? [feature.geometry.coordinates] : feature.geometry.coordinates);
-  return <svg className="gis-overlay" viewBox="0 0 1024 1024" preserveAspectRatio="none" aria-hidden="true">
-    {lines.map((line, index) => <polyline key={index} points={line.map(([lon, lat]) =>
-      `${((lon - west) / (east - west) * 1024).toFixed(1)},${((north - lat) / (north - south) * 1024).toFixed(1)}`).join(' ')} />)}
+  const lines = road.geometry.type === 'LineString' ? [road.geometry.coordinates] : road.geometry.coordinates;
+  return lines.map((line) => line.map(([lon, lat]) =>
+    `${((lon - west) / (east - west) * 1024).toFixed(1)},${((north - lat) / (north - south) * 1024).toFixed(1)}`).join(' '));
+}
+function RoadOverlay({ roads, bbox, selectedRoads, onToggle, showRoads }) {
+  if (!roads?.length || !bbox) return null;
+  return <svg className="roads-overlay" viewBox="0 0 1024 1024" preserveAspectRatio="none" aria-label="Trechos de ruas cartografadas; selecione para o relatório">
+    {roads.flatMap((road) => roadPaths(road, bbox).map((points, index) => <g key={`${road.id}-${index}`}>
+      {(showRoads || selectedRoads.includes(road.id)) && <polyline className={selectedRoads.includes(road.id) ? 'road-marked' : 'road-unmarked'} points={points} />}
+      {showRoads && <polyline className="road-click-target" points={points} role="button" tabIndex="0" aria-label={`${selectedRoads.includes(road.id) ? 'Desmarcar' : 'Marcar'} ${road.properties.name}`} onClick={() => onToggle(road.id)} onKeyDown={(event) => { if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); onToggle(road.id); } }} />}
+    </g>))}
   </svg>;
+}
+function ZoomableImage({ url, alt, roads, bbox, selectedRoads = [], onToggleRoad, showRoads = false, onAvailability }) {
+  const [scale, setScale] = useState(1);
+  const viewport = useRef(null);
+  const drag = useRef(null);
+  useEffect(() => {
+    const element = viewport.current;
+    if (element) {
+      element.scrollLeft = (element.scrollWidth - element.clientWidth) / 2;
+      element.scrollTop = (element.scrollHeight - element.clientHeight) / 2;
+    }
+  }, [scale, url]);
+  function startDrag(event) {
+    if (scale === 1 || event.target.closest?.('.road-click-target')) return;
+    const element = viewport.current;
+    drag.current = { x: event.clientX, y: event.clientY, left: element.scrollLeft, top: element.scrollTop };
+    element.setPointerCapture(event.pointerId);
+  }
+  function moveDrag(event) {
+    if (!drag.current) return;
+    const element = viewport.current;
+    element.scrollLeft = drag.current.left - (event.clientX - drag.current.x);
+    element.scrollTop = drag.current.top - (event.clientY - drag.current.y);
+  }
+  return <div className="image-viewer">
+    <div className="image-viewer-toolbar" aria-label="Ampliação interativa"><span>Visualizar</span>{[1, 2, 4].map((value) => <button key={value} type="button" aria-pressed={scale === value} className={scale === value ? 'active' : ''} onClick={() => setScale(value)}>{value}×</button>)}<small>{scale > 1 ? 'Arraste para explorar' : 'Amplie para examinar'}</small></div>
+    <div className={`image-viewport ${scale > 1 ? 'is-zoomed' : ''}`} ref={viewport} onPointerDown={startDrag} onPointerMove={moveDrag} onPointerUp={() => { drag.current = null; }} onPointerCancel={() => { drag.current = null; }}>
+      <div className="image-canvas" style={{ width: `${scale * 100}%` }}>
+        <img src={scaledImageUrl(url, scale)} alt={alt} onLoad={() => onAvailability?.(true)} onError={() => onAvailability?.(false)} />
+        {onToggleRoad && <RoadOverlay roads={roads} bbox={bbox} selectedRoads={selectedRoads} onToggle={onToggleRoad} showRoads={showRoads} />}
+      </div>
+    </div>
+  </div>;
 }
 function SceneCard({ scene, label, view }) {
   const optical = scene?.collection === "sentinel-2-l2a";
@@ -977,8 +1021,10 @@ function Admin({ open }) {
   const [token, setToken] = useState(sessionStorage.getItem("pin2_token")),
     [password, setPassword] = useState(""),
     [tab, setTab] = useState("overview"),
+    [help, setHelp] = useState(null),
     [busy, setBusy] = useState(false),
     [message, setMessage] = useState("");
+  const { live: stationLive } = useLiveStation();
   const [model, setModel] = useState({
     configs: [],
     events: [],
@@ -1021,7 +1067,10 @@ function Admin({ open }) {
         setMessage(`Erro: ${e.message}`);
       });
   useEffect(() => {
-    if (token) refresh();
+    if (!token) return;
+    refresh();
+    const timer = setInterval(refresh, 15000);
+    return () => clearInterval(timer);
   }, [token]);
   async function perform(fn) {
     setBusy(true);
@@ -1133,7 +1182,7 @@ function Admin({ open }) {
           </button>
           {message && (
             <p
-              role="status"
+              role={message.startsWith("Erro:") ? "alert" : "status"}
               className={`form-msg ${message.startsWith("Erro:") ? "error" : ""}`}
             >
               {message}
@@ -1143,6 +1192,14 @@ function Admin({ open }) {
       </main>
     );
   const current = model.configs.find((c) => c.active);
+  const lastCollection = model.jobs.find((j) => j.kind === "COLLECT");
+  const jobsById = Object.fromEntries(model.jobs.map((j) => [j.id, j]));
+  const helpText = {
+    overview: "Confira a configuração ativa, as integrações e os eventos registrados. Coletar agora consulta a estação; um evento real só aparece se as leituras cruzarem a referência configurada.",
+    config: "Escolha Defesa Civil DCSC-00043 para coletar sem ANA. Informe uma referência experimental, sua origem, o responsável e a data de validade; depois clique em Validar e ativar. Confira o resultado em Processamento.",
+    jobs: "Cada linha mostra quando o trabalho entrou na fila, a última tentativa e o resultado. A coleta busca leituras; eventos dependem de cruzamento da referência. Erros e próximas tentativas aparecem aqui.",
+    audit: "Registra quem solicitou uma coleta, alterou uma configuração ou iniciou uma demonstração, com data e detalhes para consulta.",
+  };
   const fields = [
     ["station_code", "Código ANA"],
     ["river", "Rio"],
@@ -1171,10 +1228,7 @@ function Admin({ open }) {
       <div className="admin-head">
         <div>
           <span className="caps">GESTÃO DO PROJETO</span>
-          <h1>Painel administrativo</h1>
-          <p>
-            Piloto Presidente Getúlio · processamento e tentativas auditáveis
-          </p>
+          <div className="admin-title-row"><h1>Painel administrativo</h1><button type="button" className="admin-info-button" title="Como configurar uma situação completa" aria-label="Como configurar uma situação completa" aria-expanded={help === "setup"} onClick={() => setHelp(help === "setup" ? null : "setup")}><Icon name="info" size={19} /></button></div>
         </div>
         <button
           className="btn outline"
@@ -1192,20 +1246,23 @@ function Admin({ open }) {
           ["config", "Configuração"],
           ["jobs", "Processamento"],
           ["audit", "Auditoria"],
-        ].map(([key, label]) => (
-          <button
-            key={key}
-            className={tab === key ? "selected" : ""}
-            onClick={() => setTab(key)}
-          >
-            {label}
-          </button>
-        ))}
+        ].map(([key, label]) => <div className="admin-tab-item" key={key}>
+          <button className={tab === key ? "selected" : ""} onClick={() => { setTab(key); setHelp(null); }}>{label}</button>
+          <button type="button" className="admin-tab-info" title={`Sobre ${label}`} aria-label={`Sobre ${label}`} aria-expanded={help === key} onClick={() => { setTab(key); setHelp(help === key ? null : key); }}><Icon name="info" size={16} /></button>
+        </div>)}
       </div>
+      {help && <div className="admin-help-panel" role="note">
+        {help === "setup" ? <><strong>Configurar uma situação completa</strong><ol>
+          <li>Em Configuração, escolha DCSC-00043, ajuste a referência experimental e registre origem, responsável e validade. Ative a configuração.</li>
+          <li>Na Visão geral, clique em Coletar agora. Confira data, leitura e resultado na aba Processamento.</li>
+          <li>Um evento indicativo nasce após uma leitura abaixo e duas leituras seguidas acima da referência em até 30 minutos. Se o rio estiver abaixo, nenhum evento será criado.</li>
+          <li>Quando houver evento, acompanhe imagens e tentativas em Processamento; consulte a ação em Auditoria.</li>
+        </ol></> : <><strong>{({ overview: "Visão geral", config: "Configuração", jobs: "Processamento", audit: "Auditoria" })[help]}</strong><p>{helpText[help]}</p></>}
+      </div>}
       {message && (
         <div
           className={`form-msg ${message.startsWith("Erro") ? "error" : ""}`}
-          role="status"
+          role={message.startsWith("Erro") ? "alert" : "status"}
         >
           {message}
         </div>
@@ -1359,13 +1416,19 @@ function Admin({ open }) {
                 disabled={busy}
                 onClick={() =>
                   perform(async () => {
-                    await api("/admin/collect", { method: "POST" });
-                    return "Coleta solicitada ao worker.";
+                    const result = await api("/admin/collect", { method: "POST" });
+                    setTab("jobs");
+                    setHelp(null);
+                    return result.already_running
+                      ? "Já existe uma coleta em execução. Acompanhe o resultado nesta aba."
+                      : "Coleta agendada. O resultado aparecerá nesta aba após a execução.";
                   })
                 }
               >
                 Coletar agora
               </button>
+              <p className="collection-explainer">Coletar consulta a estação; o evento depende do cruzamento da referência. {current.source_mode === "DCSC" && stationLive?.latest?.water_level_cm != null && <>Leitura publicada: <strong>{cm(stationLive.latest.water_level_cm)}</strong>; referência configurada: <strong>{cm(current.threshold_cm)}</strong>.</>}</p>
+              {lastCollection && <div className="collection-status" role="status"><strong>Última coleta</strong><span>{lastCollection.last_attempt_at ? date(lastCollection.last_attempt_at) : "Aguardando primeira execução"}</span><Badge tone={lastCollection.last_attempt_status === "SUCESSO" ? "green" : "amber"}>{lastCollection.last_attempt_status === "SUCESSO" ? "Executada" : lastCollection.last_error ? "Erro" : "Na fila"}</Badge>{lastCollection.last_result && <small>{lastCollection.last_result.inserted} novas leituras · {lastCollection.last_result.events_created?.length || 0} eventos criados</small>}{lastCollection.last_error && <small className="collection-error">{lastCollection.last_error}</small>}</div>}
               {current?.source_mode === "ANA" && <>
               <div className="replay-field">
                 <label>
@@ -1502,24 +1565,26 @@ function Admin({ open }) {
                 <tr>
                   <th>Operação</th>
                   <th>Estado</th>
-                  <th>Versão</th>
+                  <th>Criado em</th>
+                  <th>Última execução</th>
                   <th>Tentativas</th>
-                  <th>Próxima execução / erro</th>
+                  <th>Resultado / próxima coleta</th>
                 </tr>
               </thead>
               <tbody>
                 {model.jobs.map((j) => (
                   <tr key={j.id}>
-                    <td>{j.kind}</td>
-                    <td>{names[j.status] || j.status}</td>
-                    <td>v{j.version}</td>
+                    <td>{({ COLLECT: "Coleta de leituras", BASELINE: "Imagem anterior", POST_EVENT: "Imagem posterior" })[j.kind] || j.kind}<small className="job-version">v{j.version}</small></td>
+                    <td>{j.kind === "COLLECT" && j.status === "PENDENTE" && j.last_attempt_status === "SUCESSO" ? "Próxima coleta agendada" : names[j.status] || j.status}</td>
+                    <td>{date(j.created_at)}</td>
+                    <td>{date(j.last_attempt_at)}</td>
                     <td>{j.attempts}</td>
-                    <td>{j.last_error || date(j.scheduled_for)}</td>
+                    <td>{j.last_error ? <span className="job-error">Erro: {j.last_error}</span> : j.last_result ? <span>{j.last_result.inserted} leituras novas · {j.last_result.events_created?.length || 0} eventos criados{j.last_result.latest_level_cm != null && <> · nível {cm(j.last_result.latest_level_cm)}</>}</span> : j.status === "CONCLUIDO" ? "Concluído" : "Aguardando execução"}{["PENDENTE", "AGUARDANDO_RETRY"].includes(j.status) && <small className="job-next">Próxima execução: {date(j.scheduled_for)}</small>}</td>
                   </tr>
                 ))}
                 {!model.jobs.length && (
                   <tr>
-                    <td colSpan="5">Nenhum job criado.</td>
+                    <td colSpan="6">Nenhum job criado.</td>
                   </tr>
                 )}
               </tbody>
@@ -1540,6 +1605,7 @@ function Admin({ open }) {
               <thead>
                 <tr>
                   <th>Quando</th>
+                  <th>Job criado em</th>
                   <th>Responsável</th>
                   <th>Ação</th>
                   <th>Detalhes</th>
@@ -1549,6 +1615,7 @@ function Admin({ open }) {
                 {model.audit.map((a, i) => (
                   <tr key={i}>
                     <td>{date(a.created_at)}</td>
+                    <td>{a.details?.job_id ? date(jobsById[a.details.job_id]?.created_at) : "—"}</td>
                     <td>{a.actor}</td>
                     <td>{a.action.replaceAll("_", " ")}</td>
                     <td>
@@ -1558,7 +1625,7 @@ function Admin({ open }) {
                 ))}
                 {!model.audit.length && (
                   <tr>
-                    <td colSpan="4">Sem registros.</td>
+                    <td colSpan="5">Sem registros.</td>
                   </tr>
                 )}
               </tbody>
@@ -1584,11 +1651,20 @@ function useRecentSatellite() {
   return { pair, error };
 }
 
-function RecentCompare({ pair, error, gis }) {
+function RecentCompare({ pair, error }) {
   const [view, setView] = useState("default");
   const [overlay, setOverlay] = useState(false);
-  const [showGis, setShowGis] = useState(true);
   const [split, setSplit] = useState(50);
+  const [overlayScale, setOverlayScale] = useState(1);
+  const overlayViewport = useRef(null);
+  const overlayDrag = useRef(null);
+  useEffect(() => {
+    const element = overlayViewport.current;
+    if (element) {
+      element.scrollLeft = (element.scrollWidth - element.clientWidth) / 2;
+      element.scrollTop = (element.scrollHeight - element.clientHeight) / 2;
+    }
+  }, [overlayScale, overlay, view]);
   const scenes = pair?.scenes || [];
   return (
     <section className="latest-section" id="imagens">
@@ -1607,40 +1683,42 @@ function RecentCompare({ pair, error, gis }) {
             <button className={!overlay ? "active" : ""} onClick={() => setOverlay(false)}>Lado a lado</button>
             <button className={overlay ? "active" : ""} onClick={() => setOverlay(true)}>Sobrepor</button>
           </div>
-          {gis && <button className="gis-toggle" aria-pressed={showGis} onClick={() => setShowGis((value) => !value)}>{showGis ? 'Ocultar eixo GIS' : 'Mostrar eixo GIS'}</button>}
         </div>}
       </div>
-      {error ? <p className="data-message">{error}</p> : !pair ? <p className="data-message">Consultando as imagens…</p>
+      {error ? <p className="error" role="alert">{error}</p> : !pair ? <p className="data-message">Consultando as imagens…</p>
         : !pair.available ? <p className="data-message">{pair.reason}</p>
         : <>
           {overlay ? <div className="latest-overlay">
-            <div className="latest-overlay-images">
-              <img src={scenes[0].images[view]} alt={`Rio dos Índios em ${date(scenes[0].acquired_at, { dateStyle: "medium" })}`} />
-              <div style={{ clipPath: `inset(0 ${100 - split}% 0 0)` }}><img src={scenes[1].images[view]} alt={`Rio dos Índios em ${date(scenes[1].acquired_at, { dateStyle: "medium" })}`} /></div>
-              {showGis && <RiverOverlay gis={gis} bbox={pair.bbox} />}
-              <i style={{ left: `${split}%` }} />
+            <div className="image-viewer-toolbar" aria-label="Ampliação da sobreposição"><span>Visualizar</span>{[1, 2, 4].map((value) => <button key={value} type="button" aria-pressed={overlayScale === value} className={overlayScale === value ? 'active' : ''} onClick={() => setOverlayScale(value)}>{value}×</button>)}<small>{overlayScale > 1 ? 'Arraste para explorar' : 'Amplie para examinar'}</small></div>
+            <div className={`latest-overlay-viewport ${overlayScale > 1 ? 'is-zoomed' : ''}`} ref={overlayViewport}
+              onPointerDown={(event) => { if (overlayScale === 1) return; const el = overlayViewport.current; overlayDrag.current = { x: event.clientX, y: event.clientY, left: el.scrollLeft, top: el.scrollTop }; el.setPointerCapture(event.pointerId); }}
+              onPointerMove={(event) => { if (!overlayDrag.current) return; const el = overlayViewport.current; el.scrollLeft = overlayDrag.current.left - (event.clientX - overlayDrag.current.x); el.scrollTop = overlayDrag.current.top - (event.clientY - overlayDrag.current.y); }}
+              onPointerUp={() => { overlayDrag.current = null; }} onPointerCancel={() => { overlayDrag.current = null; }}>
+              <div className="latest-overlay-images" style={{ width: `${overlayScale * 100}%` }}>
+                <img src={scaledImageUrl(scenes[0].images[view], overlayScale)} alt={`Rio dos Índios em ${date(scenes[0].acquired_at, { dateStyle: "medium" })}`} />
+                <div style={{ clipPath: `inset(0 ${100 - split}% 0 0)` }}><img src={scaledImageUrl(scenes[1].images[view], overlayScale)} alt={`Rio dos Índios em ${date(scenes[1].acquired_at, { dateStyle: "medium" })}`} /></div>
+                <i style={{ left: `${split}%` }} />
+              </div>
             </div>
             <label>Deslize para comparar as datas<input type="range" min="0" max="100" value={split} onChange={(e) => setSplit(+e.target.value)} /></label>
           </div> : <div className="latest-pair">
             {scenes.map((scene, index) => <figure key={scene.product_id}>
-              <div className="geo-image"><a href={scene.images[view]} target="_blank" rel="noreferrer" title="Abrir imagem em tamanho completo">
-                <img src={scene.images[view]} alt={`Rio dos Índios na passagem de ${date(scene.acquired_at, { dateStyle: "medium" })}`} />
-              </a>{showGis && <RiverOverlay gis={gis} bbox={pair.bbox} />}</div>
+              <ZoomableImage url={scene.images[view]} alt={`Rio dos Índios na passagem de ${date(scene.acquired_at, { dateStyle: "medium" })}`} />
               <figcaption><strong>{index === 0 ? "Passagem anterior" : "Passagem mais recente utilizável"}</strong><span>{date(scene.acquired_at, { dateStyle: "medium" })} · {scene.river_obscured_percent == null ? `${scene.cloud_percent}% encoberto no recorte` : `${scene.river_obscured_percent}% encoberto no rio`}</span><DownloadLinks url={scene.images[view]} name={`rio-dos-indios-${scene.acquired_at.slice(0,10)}`} /></figcaption>
             </figure>)}
           </div>}
           <div className="latest-notes">
             <p>{pair.latest_pass ? `Última passagem catalogada: ${date(pair.latest_pass.acquired_at, { dateStyle: "medium" })} (${pair.latest_pass.tile_cloud_percent}% de nuvens no tile).` : ""} A comparação usa as últimas passagens com até 10% de pixels encobertos ou inválidos no recorte.{pair.rejected && <> <a className="rejected-link" href={pair.rejected.image_url} target="_blank" rel="noreferrer">Ver imagem encoberta de {date(pair.rejected.acquired_at, { dateStyle: "medium" })} ({pair.rejected.obscured_percent}% do recorte) ↗</a></>}</p>
-            <p>Azul indica possível água por SCL/NDWI/MNDWI. {gis && <>Quando ativo, o tracejado mostra o eixo dos rios de <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noreferrer">© OpenStreetMap contributors (ODbL)</a>. </>}São camadas indicativas, não uma mancha oficial de inundação. Resolução nativa de 10–20 m. Catálogo consultado em {date(pair.checked_at)}.</p>
+            <p>O destaque azul combina análise espectral do Sentinel-2 com a referência GIS dos rios de <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noreferrer">© OpenStreetMap contributors (ODbL)</a>. Indica possível água, não comprova inundação. Resolução nativa de 10–20 m. Catálogo consultado em {date(pair.checked_at)}.</p>
             <p><a href="/api/gis/rivers" download="rios-area-piloto.geojson">Baixar traçado GIS dos rios (GeoJSON)</a></p>
           </div>
-          <p className="upscale-note">Os arquivos 2× e 4× usam interpolação para ampliar a apresentação. Não acrescentam detalhes medidos pelo satélite.</p>
+          <p className="upscale-note">Amplie na própria página para examinar o recorte. 2× e 4× interpolam pixels, sem acrescentar detalhes medidos pelo satélite.</p>
         </>}
     </section>
   );
 }
 
-function PeriodSearch({ gis }) {
+function PeriodSearch() {
   const [start, setStart] = useState('');
   const [end, setEnd] = useState('');
   const [lat, setLat] = useState('');
@@ -1649,18 +1727,30 @@ function PeriodSearch({ gis }) {
   const [selected, setSelected] = useState([]);
   const [loading, setLoading] = useState(false);
   const [message, setMessage] = useState('');
+  const [searchError, setSearchError] = useState(false);
   const [view, setView] = useState('default');
   const [searchedCoords, setSearchedCoords] = useState('');
+  const [area, setArea] = useState(null);
+  const [areaLoading, setAreaLoading] = useState(false);
+  const [areaError, setAreaError] = useState('');
+  const searchRequest = useRef(0);
   async function submit(event) {
     event.preventDefault();
-    setLoading(true); setMessage(''); setResults(null); setSelected([]);
+    const request = ++searchRequest.current;
+    setLoading(true); setMessage(''); setSearchError(false); setResults(null); setSelected([]); setArea(null); setAreaError('');
     try {
       const coords = lat !== '' || lon !== '' ? `&lat=${encodeURIComponent(lat)}&lon=${encodeURIComponent(lon)}` : '';
       const data = await api(`/satellite/search?start=${start}&end=${end}${coords}`);
+      if (request !== searchRequest.current) return;
       setResults(data);
       setSearchedCoords(coords);
       if (!data.scenes.length) setMessage('Nenhuma passagem encontrada neste período ou até 15 dias ao redor.');
-    } catch (error) { setMessage(error.message); }
+      setAreaLoading(true);
+      api(`/gis/area${coords ? `?${coords.slice(1)}` : ''}`)
+        .then((value) => { if (request === searchRequest.current) setArea(value); })
+        .catch((error) => { if (request === searchRequest.current) setAreaError(error.message); })
+        .finally(() => { if (request === searchRequest.current) setAreaLoading(false); });
+    } catch (error) { setMessage(error.message); setSearchError(true); }
     finally { setLoading(false); }
   }
   function toggle(scene) {
@@ -1678,26 +1768,95 @@ function PeriodSearch({ gis }) {
       <label>Longitude<input type="number" step="any" min="-179.98" max="179.98" value={lon} placeholder="-49.621" onChange={(e) => setLon(e.target.value)} /></label>
       <button className="btn primary" disabled={loading}>{loading ? 'Consultando…' : 'Buscar passagens'}</button>
     </form>
-    {message && <p className="data-message" role="status">{message}</p>}
+    {message && <p className={searchError ? 'image-error' : 'data-message'} role={searchError ? 'alert' : 'status'}>{message}</p>}
     {results && <><p className="search-note">{results.scenes.length} datas encontradas. Selecione duas. Centro do recorte: {((results.bbox[1] + results.bbox[3]) / 2).toFixed(5)}, {((results.bbox[0] + results.bbox[2]) / 2).toFixed(5)}. A porcentagem de nuvens abaixo é do tile inteiro; cada imagem é verificada no recorte antes de abrir.</p>
       <div className="search-results">{results.scenes.map((scene) => <button type="button" key={scene.product_id} aria-pressed={selected.some((item) => item.product_id === scene.product_id)} className={selected.some((item) => item.product_id === scene.product_id) ? 'selected' : ''} onClick={() => toggle(scene)}>
-        <strong>{date(scene.acquired_at, {dateStyle:'medium'})}</strong><span>{scene.in_period ? 'No período' : `${scene.distance_days} dia(s) do período`}</span><small>{scene.tile_cloud_percent == null ? 'Nuvens não informadas' : `${scene.tile_cloud_percent}% nuvens no tile`}</small>
+        <strong>{date(scene.acquired_at, {dateStyle:'medium'})}</strong><span>{scene.in_period ? 'No período' : `${scene.distance_days} dia(s) do período`}</span><small>{scene.tile_cloud_percent == null ? 'Nuvens não informadas' : `${scene.tile_cloud_percent}% nuvens no tile`}</small><small>{scene.footprint_coverage_percent == null ? 'Cobertura a verificar' : `${scene.footprint_coverage_percent}% do recorte coberto pelo produto`}</small>
       </button>)}</div>
-      {selected.length > 0 && <><div className="segmented search-view" aria-label="Visualização das imagens"><button className={view === 'default' ? 'active' : ''} onClick={() => setView('default')}>Água destacada</button><button className={view === 'natural' ? 'active' : ''} onClick={() => setView('natural')}>Cor natural</button></div><div className="search-comparison">{[...selected].sort((a, b) => a.acquired_at.localeCompare(b.acquired_at)).map((scene) => <SearchImage key={`${scene.product_id}-${view}`} scene={scene} view={view} locationQuery={locationQuery} bbox={results.bbox} gis={gis} />)}</div><p className="upscale-note">PNG original para relatório; 2×/4× apenas interpolam pixels. {gis && results.bbox.every((value, index) => value === gis.bbox[index]) ? <>Tracejado: eixo de <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noreferrer">© OpenStreetMap contributors (ODbL)</a>.</> : 'Fora da área piloto, não há traçado GIS de rios nesta versão.'} A comparação visual não comprova inundação.</p></>}
+      {selected.length > 0 && <><div className="segmented search-view" aria-label="Visualização das imagens"><button className={view === 'default' ? 'active' : ''} onClick={() => setView('default')}>Água destacada</button><button className={view === 'natural' ? 'active' : ''} onClick={() => setView('natural')}>Cor natural</button></div>
+        {areaLoading && <p className="search-note" role="status">Consultando rios e ruas no GIS desta localização…</p>}
+        {areaError && <p className="gis-warning" role="status">Ruas do OpenStreetMap indisponíveis agora: {areaError}. Você ainda pode anotar uma rua manualmente.</p>}
+        {area?.status && area.status !== 'available' && <p className="gis-warning" role="status">{area.message || 'Cartografia indisponível para este recorte.'} Você ainda pode anotar uma rua manualmente.</p>}
+        <div className="search-comparison">{[...selected].sort((a, b) => a.acquired_at.localeCompare(b.acquired_at)).map((scene) => <SearchImage key={`${scene.product_id}-${view}-${results.bbox.join(',')}`} scene={scene} view={view} locationQuery={locationQuery} bbox={results.bbox} area={area} />)}</div><p className="upscale-note">Amplie e anote as ruas no próprio painel; baixe o PNG só quando precisar. Quando a cartografia está disponível, o destaque de água combina a análise espectral com a referência GIS desta localização. Dados cartográficos: <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noreferrer">© OpenStreetMap contributors (ODbL)</a>. A comparação visual não comprova inundação.</p></>}
     </>}
   </section>;
 }
 
-function SearchImage({ scene, view, locationQuery, bbox, gis }) {
-  const [available, setAvailable] = useState(null);
+function readImpactDraft(key) {
+  try {
+    const value = JSON.parse(localStorage.getItem(key) || '[]');
+    return Array.isArray(value) ? value.filter((item) => item && typeof item.id === 'string' && typeof item.name === 'string') : [];
+  } catch { return []; }
+}
+function downloadImpactCsv(items, scene, bbox) {
+  const escapeCell = (value, numeric = false) => `"${(numeric ? String(value ?? '') : String(value ?? '').replace(/^[=+@-]/, "'$&")).replace(/"/g, '""')}"`;
+  const rows = [['data_da_imagem', 'produto_copernicus', 'latitude', 'longitude', 'rua_ou_trecho', 'id_osm', 'origem', 'situacao'],
+    ...items.map((item) => [scene.acquired_at.slice(0, 10), scene.product_id,
+      ((bbox[1] + bbox[3]) / 2).toFixed(6), ((bbox[0] + bbox[2]) / 2).toFixed(6),
+      item.name, item.source === 'OpenStreetMap' ? item.id : '', item.source, 'Impacto informado manualmente; requer verificação em campo'])];
+  const blob = new Blob(['\uFEFF', rows.map((row) => row.map((value, index) => escapeCell(value, index === 2 || index === 3)).join(';')).join('\r\n')], { type: 'text/csv;charset=utf-8' });
+  const objectUrl = URL.createObjectURL(blob);
+  const link = document.createElement('a');
+  link.href = objectUrl; link.download = `ruas-anotadas-${scene.acquired_at.slice(0,10)}.csv`;
+  document.body.appendChild(link); link.click(); link.remove();
+  setTimeout(() => URL.revokeObjectURL(objectUrl), 1000);
+}
+function SearchImage({ scene, view, locationQuery, bbox, area }) {
+  const [inspection, setInspection] = useState(null);
+  const [inspectionError, setInspectionError] = useState('');
+  const [imageLoaded, setImageLoaded] = useState(null);
+  const [manualName, setManualName] = useState('');
+  const [roadId, setRoadId] = useState('');
+  const [showRoads, setShowRoads] = useState(false);
+  const draftKey = `pin2-impact-${scene.product_id}-${bbox.join(',')}`;
+  const [marked, setMarked] = useState(() => readImpactDraft(draftKey));
+  useEffect(() => { try { localStorage.setItem(draftKey, JSON.stringify(marked)); } catch { /* CSV export remains available. */ } }, [draftKey, marked]);
   const preview = `/api/satellite/search/preview/${encodeURIComponent(scene.product_id)}?view=${view}${locationQuery}`;
+  const roads = area?.roads?.features?.filter((road) => road.id && road.properties?.name && ['LineString', 'MultiLineString'].includes(road.geometry?.type)) || [];
+  const markedIds = marked.filter((item) => item.source === 'OpenStreetMap').map((item) => item.id);
   const filename = `sentinel-${scene.acquired_at.slice(0,10)}-lat${((bbox[1] + bbox[3]) / 2).toFixed(5)}-lon${((bbox[0] + bbox[2]) / 2).toFixed(5)}`;
-  return <figure className={`search-preview ${available === false ? 'unavailable' : ''}`}>
-    <figcaption><strong>{date(scene.acquired_at, {dateStyle:'medium'})}</strong><small>Produto: {scene.product_id}</small></figcaption>
-    <div className="geo-image"><a href={preview} target="_blank" rel="noreferrer"><img src={preview} alt={`Imagem Sentinel-2 de ${date(scene.acquired_at, {dateStyle:'medium'})}`} onLoad={() => setAvailable(true)} onError={() => setAvailable(false)} /></a>{available && <RiverOverlay gis={gis} bbox={bbox} />}</div>
-    {available === null && <small>Processando e verificando a passagem…</small>}
-    {available === false && <small className="preview-unavailable">Cena encoberta ou área piloto sem rio visível. Escolha outra data.</small>}
-    {available && <DownloadLinks url={preview} name={filename} />}
+  useEffect(() => {
+    let active = true;
+    setInspection(null); setInspectionError(''); setImageLoaded(null);
+    api(`/satellite/search/inspect/${encodeURIComponent(scene.product_id)}?${locationQuery.slice(1)}`)
+      .then((value) => { if (active) setInspection(value); })
+      .catch((error) => { if (active) setInspectionError(error.message); });
+    return () => { active = false; };
+  }, [scene.product_id, locationQuery]);
+  function toggleRoad(id) {
+    const road = roads.find((item) => item.id === id);
+    if (!road) return;
+    setMarked((current) => current.some((item) => item.id === id)
+      ? current.filter((item) => item.id !== id)
+      : [...current, { id, name: road.properties.name, source: 'OpenStreetMap' }]);
+  }
+  function addManual(event) {
+    event.preventDefault();
+    const name = manualName.trim();
+    if (!name) return;
+    setMarked((current) => [...current, { id: `manual-${Date.now()}-${Math.random().toString(36).slice(2,8)}`, name, source: 'Anotação manual' }]);
+    setManualName('');
+  }
+  return <figure className={`search-preview ${inspection?.available === false || inspectionError ? 'unavailable' : ''}`}>
+    <figcaption><strong>{date(scene.acquired_at, {dateStyle:'medium'})}</strong><small>Produto: {scene.product_id}</small><small>{scene.tile_cloud_percent != null ? `${scene.tile_cloud_percent}% de nuvens informado para o tile inteiro` : 'Nebulosidade do tile não informada'}</small></figcaption>
+    {!inspection && !inspectionError && <p className="image-processing" role="status">Verificando pixels e cobertura neste recorte…</p>}
+    {inspectionError && <p className="image-error" role="alert"><strong>Não foi possível verificar esta imagem.</strong> {inspectionError}</p>}
+    {inspection?.available === false && <p className="image-error" role="status"><strong>Imagem indisponível neste recorte.</strong> {inspection.reason || 'Escolha outra passagem.'} {inspection.local_no_data_percent != null && `${inspection.local_no_data_percent}% do recorte sem dados do satélite.`} {inspection.local_obscured_percent != null && `${inspection.local_obscured_percent}% de pixels encobertos ou sem dados no recorte.`}</p>}
+    {inspection?.available && <>
+      {inspection.local_no_data_percent != null && <small className="image-local-quality">Neste recorte: {inspection.local_no_data_percent}% sem dados; {inspection.local_obscured_percent}% encobertos ou sem dados.</small>}
+      <ZoomableImage url={preview} alt={`Imagem Sentinel-2 de ${date(scene.acquired_at, {dateStyle:'medium'})}`} roads={roads} bbox={bbox} selectedRoads={markedIds} onToggleRoad={toggleRoad} showRoads={showRoads} onAvailability={setImageLoaded} />
+      {imageLoaded === false && <p className="image-error" role="alert">A imagem foi aprovada, mas o arquivo não pôde ser aberto agora. Tente novamente.</p>}
+      {imageLoaded && <DownloadLinks url={preview} name={filename} />}
+      <div className="impact-register">
+        <strong>Ruas impactadas para relatório</strong>
+        <p>Marque trechos no mapa ou selecione uma rua. Este é um registro manual para verificação em campo; a imagem não identifica impacto automaticamente.</p>
+        {roads.length > 0 && <label className="impact-show-roads"><input type="checkbox" checked={showRoads} onChange={(event) => setShowRoads(event.target.checked)} /> Mostrar trechos cartografados na imagem</label>}
+        {roads.length > 0 && <div className="impact-add"><select aria-label="Trecho de rua no GIS" value={roadId} onChange={(event) => setRoadId(event.target.value)}><option value="">Selecione um trecho cartografado</option>{roads.map((road) => <option key={road.id} value={road.id}>{road.properties.name} · {road.id}</option>)}</select><button type="button" disabled={!roadId} onClick={() => { toggleRoad(roadId); setRoadId(''); }}>Marcar trecho</button></div>}
+        <form className="impact-add" onSubmit={addManual}><input aria-label="Nome de rua não cartografada" value={manualName} maxLength={120} onChange={(event) => setManualName(event.target.value)} placeholder="Outra rua ou referência local" /><button type="submit" disabled={!manualName.trim()}>Adicionar</button></form>
+        {marked.length > 0 ? <><ul className="impact-list">{marked.map((item) => <li key={item.id}><span>{item.name}<small>{item.source === 'OpenStreetMap' ? `Trecho ${item.id}` : item.source}</small></span><button type="button" aria-label={`Remover ${item.name}`} onClick={() => setMarked((current) => current.filter((other) => other.id !== item.id))}>Remover</button></li>)}</ul><button type="button" className="impact-export" onClick={() => downloadImpactCsv(marked, scene, bbox)}>Baixar ruas anotadas (CSV)</button></> : <small>Nenhuma rua anotada para esta data.</small>}
+        <small className="impact-local-note">Rascunho salvo neste navegador. Faça o download do CSV para compartilhar.</small>
+      </div>
+    </>}
   </figure>;
 }
 
@@ -1730,7 +1889,7 @@ function CaseModal({ id, onClose }) {
         <div className="case-scenes">
           {[["BASELINE", "Antes"], ["POST_EVENT", "Depois"]].map(([role, label]) => {
             const scene = caseData.scenes[role];
-            return scene && <figure key={role}><a href={sceneUrl(scene, view)} target="_blank" rel="noreferrer"><img src={sceneUrl(scene, view)} alt={`${label}: rio e entorno em ${date(scene.acquired_at, { dateStyle: "medium" })}`} /></a><figcaption>{label} · {date(scene.acquired_at, { dateStyle: "medium" })}<DownloadLinks url={sceneUrl(scene, view)} name={`rio-dos-indios-${scene.acquired_at.slice(0,10)}`} /></figcaption></figure>;
+            return scene && <figure key={role}><ZoomableImage url={sceneUrl(scene, view)} alt={`${label}: rio e entorno em ${date(scene.acquired_at, { dateStyle: "medium" })}`} /><figcaption>{label} · {date(scene.acquired_at, { dateStyle: "medium" })}<DownloadLinks url={sceneUrl(scene, view)} name={`rio-dos-indios-${scene.acquired_at.slice(0,10)}`} /></figcaption></figure>;
           })}
         </div>
         {(caseData.scenes.BASELINE || caseData.scenes.POST_EVENT) && <p className="upscale-note">Ampliação 2×/4× por interpolação para apresentação; a resolução do sensor não muda.</p>}
@@ -1746,11 +1905,9 @@ function App() {
   const { live, error: liveError } = useLiveStation();
   const monitor = useMonitorStatus();
   const { pair, error: pairError } = useRecentSatellite();
-  const [gis, setGis] = useState(null);
   const [realEvents, setRealEvents] = useState([]);
   const [openCase, setOpenCase] = useState(null);
   const [showAdmin, setShowAdmin] = useState(false);
-  useEffect(() => { api('/gis/rivers').then(setGis).catch(() => {}); }, []);
   useEffect(() => {
     let active = true;
     const load = () => api('/events?mode=AO_VIVO').then((value) => { if (active) setRealEvents(value.items); }).catch(() => {});
@@ -1766,7 +1923,7 @@ function App() {
     </div></header>
     <main>
       <section className="landing-intro"><div className="container"><span className="caps">MONITORAMENTO FLUVIAL · ÁREA DE ESTUDO</span><h1>Nível do rio e imagens de satélite</h1><p>Acompanhe a estação da área piloto ou escolha coordenadas e duas datas para comparar imagens do Copernicus.</p></div></section>
-      <div className="container landing-content"><LiveStation live={live} error={liveError} station={live?.station} monitor={monitor} /><RecentCompare pair={pair} error={pairError} gis={gis} /><PeriodSearch gis={gis} />
+      <div className="container landing-content"><LiveStation live={live} error={liveError} station={live?.station} monitor={monitor} /><RecentCompare pair={pair} error={pairError} /><PeriodSearch />
         {realEvents.length > 0 && <section className="landing-events" id="eventos"><div className="landing-section-head"><div><span className="caps">REGISTROS</span><h2>Eventos monitorados</h2></div></div><div className="event-grid">{realEvents.slice(0, 3).map((event) => <EventCard key={event.id} item={event} open={setOpenCase} />)}</div></section>}
         <section className="landing-history" id="historia"><div><span className="caps">CURIOSIDADE HISTÓRICA</span><h2>Enchente de novembro de 2023</h2><p>Um episódio documentado com imagens Sentinel-2 de antes e depois. Os níveis do replay são simulados.</p><button className="btn ghost" onClick={() => setOpenCase('history-2023')}>Ver história e imagens <Icon name="arrow" size={17} /></button></div><img src="/api/historical/2023/image/BASELINE?view=default" alt="Vista de Presidente Getúlio antes da enchente de 2023" /></section>
         <section className="landing-method" id="sobre"><span className="caps">COMO LER O PAINEL</span><p>O nível vem da estação DCSC-00043 reproduzida pelo <a href="https://pdc.presidentegetulio.sc.gov.br/monitoramento" target="_blank" rel="noreferrer">portal municipal</a>. As imagens vêm do Copernicus. Diferenças visuais não confirmam uma inundação nem substituem alertas oficiais.</p></section>

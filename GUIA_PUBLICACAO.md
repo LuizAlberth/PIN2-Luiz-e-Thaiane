@@ -97,7 +97,7 @@ Abra `https://SEU_SUBDOMINIO.duckdns.org`. Caddy obtém o certificado automatica
 
 ## 7. Operação sem o Codex
 
-O Docker sobe após reiniciar a VM, e os contêineres têm `restart: unless-stopped`. O worker coleta as leituras e verifica novas passagens automaticamente. Para verificar:
+O Docker sobe após reiniciar a VM, e os contêineres têm `restart: unless-stopped`. O worker coleta as leituras e verifica novas passagens automaticamente. No painel Admin, **Coletar agora** apenas antecipa a consulta à estação: veja o resultado e o horário em **Processamento**. Uma consulta sem leitura nova ou com nível abaixo da referência não cria evento. Após três falhas consecutivas, a coleta para; use o botão para tentar novamente e consulte a mensagem de erro em **Processamento**. Para verificar os serviços:
 
 ```bash
 cd ~/PIN2-Luiz-e-Thaiane

@@ -45,8 +45,9 @@ function evaluatePixel(samples) {
   let clear = s.dataMask && ![0,1,2,3,7,8,9,10,11].includes(s.SCL);
   let spectral = ndwi > 0 && mndwi > -0.02 && s.B08 < 0.16 && s.B03 > s.B04*0.80;
   let water = clear && (s.SCL === 6 || spectral);
+  let strong = clear && (s.SCL === 6 || (ndwi > 0.18 && mndwi > 0.12 && s.B08 < 0.12));
   let rgb = [3.5*s.B04, 3.5*s.B03, 3.5*s.B02];
-  return {default:[...(water ? [0.02,0.58,0.95] : rgb),s.dataMask], natural:[...rgb,s.dataMask], quality:[s.SCL], water:[water ? 255 : 0]};
+  return {default:[...(water ? [0.02,0.58,0.95] : rgb),s.dataMask], natural:[...rgb,s.dataMask], quality:[s.SCL], water:[strong ? 255 : water ? 128 : 0]};
 }
 function updateOutputMetadata(scenes, inputMetadata, outputMetadata) {
   outputMetadata.userData = {tiles: scenes.tiles.map(t => ({productId:t.sentinel2ProductId,

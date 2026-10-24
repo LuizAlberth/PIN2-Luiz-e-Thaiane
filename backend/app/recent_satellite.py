@@ -17,17 +17,18 @@ from pathlib import Path
 from PIL import Image, ImageDraw
 import httpx
 from botocore.exceptions import BotoCoreError, ClientError
-from shapely.geometry import Point, shape
+from shapely.geometry import box, shape
 
 from .adapters import CDSEClient, ProviderError, checked, parsed_time, verify_png
 from .models import now
 from .satellite_demo import BBOX, OPTICAL_SCRIPT, VISUALIZATION
 from .storage import get, put
+from .gis_area import area_geojson
 
 MANIFEST_KEY = 'latest-sentinel/manifest.json'
 COLLECTION = 'sentinel-2-l2a'
 _preview_lock = threading.Lock()
-ALGORITHM_VERSION = 3
+ALGORITHM_VERSION = 4
 RIVER_DATA = Path(__file__).resolve().parent / 'assets/pilot_rivers.geojson'
 PRODUCT_PATTERN = re.compile(r'^S2[ABC]_MSIL2A_\d{8}T\d{6}_N\d{4}_R038_T22JFR_\d{8}T\d{6}$')
 SEARCH_PRODUCT_PATTERN = re.compile(r'^S2[ABC]_MSIL2A_\d{8}T\d{6}_N\d{4}_R\d{3}_T\d{2}[A-Z]{3}_\d{8}T\d{6}$')
@@ -38,7 +39,8 @@ function evaluatePixel(samples) { let s=samples[0]; return {quality:[s && s.data
 function updateOutputMetadata(scenes,inputMetadata,outputMetadata) {
   outputMetadata.userData={tiles:scenes.tiles.map(t=>({productId:t.sentinel2ProductId}))};
 }'''
-UNUSABLE_SCL = (0, 1, 3, 8, 9, 10, 11)
+UNUSABLE_SCL = (0, 1, 3, 7, 8, 9, 10, 11)
+CLOUD_SCL = (8, 9, 10)
 
 @lru_cache(maxsize=1)
 def river_geojson():
@@ -76,20 +78,66 @@ def _quality(blob):
     return round(100 * sum(counts[i] for i in UNUSABLE_SCL) / pixels, 2) if pixels else 100.0
 
 
+def _quality_metrics(blob):
+    with Image.open(BytesIO(blob)) as image:
+        counts = image.convert('L').histogram()
+    pixels = sum(counts)
+    if not pixels:
+        return {'local_cloud_percent': 0.0, 'local_no_data_percent': 100.0,
+                'local_obscured_percent': 100.0}
+    pct = lambda n: round(100 * n / pixels, 2)
+    return {'local_cloud_percent': pct(sum(counts[i] for i in CLOUD_SCL)),
+            'local_no_data_percent': pct(counts[0]),
+            'local_obscured_percent': pct(sum(counts[i] for i in UNUSABLE_SCL))}
+
+
 def _river_mask(size):
+    return _waterway_mask(size, BBOX, river_geojson()['features'], corridor_ratio=.035)
+
+
+def _waterway_mask(size, bbox, features, corridor_ratio=.018):
     width, height = size
     mask = Image.new('L', size, 0)
     draw = ImageDraw.Draw(mask)
-    west, south, east, north = BBOX
-    for feature in river_geojson()['features']:
+    west, south, east, north = bbox
+    for feature in features:
         geometry = feature['geometry']
         lines = [geometry['coordinates']] if geometry['type'] == 'LineString' else geometry['coordinates']
         for line in lines:
             points = [(round((lon - west) / (east - west) * (width - 1)),
                        round((north - lat) / (north - south) * (height - 1))) for lon, lat in line]
             if len(points) > 1:
-                draw.line(points, fill=255, width=max(5, round(width * .035)), joint='curve')
+                draw.line(points, fill=255, width=max(5, round(width * corridor_ratio)), joint='curve')
     return mask
+
+
+def _integrated_water_image(natural_blob, water_blob, bbox, waterways):
+    """Highlight observed water; GIS supports weak spectral detections near rivers.
+
+    Water is never painted from a mapped line alone. SCL=6 is retained anywhere;
+    the weaker NDWI/MNDWI test is accepted in a mapped waterway corridor. Where
+    OSM has no mapped waterway, keep the satellite result and report that limit.
+    """
+    with Image.open(BytesIO(natural_blob)) as image:
+        natural = image.convert('RGBA')
+    with Image.open(BytesIO(water_blob)) as image:
+        water = image.convert('L')
+    if natural.size != water.size:
+        raise ProviderError('Máscara de água incompatível com a imagem Sentinel-2')
+    corridor = _waterway_mask(natural.size, bbox, waterways) if waterways else None
+    pixels = natural.load()
+    detected = water.load()
+    near_river = corridor.load() if corridor else None
+    count = 0
+    for y in range(natural.height):
+        for x in range(natural.width):
+            value = detected[x, y]
+            if pixels[x, y][3] and (value == 255 or value and (near_river is None or near_river[x, y])):
+                pixels[x, y] = (5, 148, 242, pixels[x, y][3])
+                count += 1
+    output = BytesIO()
+    natural.save(output, format='PNG', optimize=True)
+    return output.getvalue(), round(100 * count / (natural.width * natural.height), 2)
 
 
 def _river_obscured(blob):
@@ -145,6 +193,14 @@ def search_key(product_id, bbox):
 def _request(client, feature, script, resolution, outputs, bbox=None):
     acquired = parsed_time(feature['properties']['datetime'])
     start = acquired.replace(hour=0, minute=0, second=0, microsecond=0)
+    selected_product = feature['id'].removesuffix('.SAFE')
+    # A calendar day can contain overlapping Sentinel-2 products. Restrict the
+    # TILE samples to the catalog product the visitor selected; samples[0]
+    # otherwise may belong to a different, partly empty product.
+    script = (script + '\nfunction preProcessScenes(collections) {'
+              'collections.scenes.tiles = collections.scenes.tiles.filter(t => '
+              'String(t.sentinel2ProductId).split(".SAFE")[0] === '
+              + json.dumps(selected_product) + '); return collections; }')
     payload = {'input': {'bounds': {'bbox': bbox or BBOX,
         'properties': {'crs': 'http://www.opengis.net/def/crs/EPSG/0/4326'}},
         'data': [{'type': COLLECTION, 'dataFilter': {'timeRange': {
@@ -163,35 +219,74 @@ def _request(client, feature, script, resolution, outputs, bbox=None):
         raise ProviderError('Falha ao processar passagem Sentinel-2') from exc
     metadata = json.loads(blobs.pop('userdata'))
     product_ids = {t.get('productId', '').removesuffix('.SAFE') for t in metadata['tiles']}
-    selected_product = feature['id'].removesuffix('.SAFE')
-    if selected_product not in product_ids or (bbox is None and product_ids != {selected_product}):
+    if product_ids != {selected_product}:
         raise ProviderError('Produto processado difere da passagem escolhida')
     return blobs
 
 
-def _scene(client, feature, key_prefix='latest-sentinel', bbox=None, require_river=True):
+def _scene(client, feature, key_prefix='latest-sentinel', bbox=None, require_river=True,
+           diagnostics=None):
+    diagnostics = diagnostics if diagnostics is not None else {}
     screening = _request(client, feature, SCREEN_SCRIPT, 256, ('quality', 'userdata'), bbox=bbox)
-    if _quality(screening['quality']) > 10 or (require_river and _river_obscured(screening['quality']) > 10):
+    diagnostics.update(_quality_metrics(screening['quality']))
+    river_screen = _river_obscured(screening['quality']) if require_river else None
+    diagnostics['river_obscured_percent'] = river_screen
+    if diagnostics['local_obscured_percent'] > 10 or (require_river and river_screen > 10):
+        diagnostics['reason'] = _quality_reason(diagnostics, river_screen, require_river)
         return None
     images = _request(client, feature, OPTICAL_SCRIPT, 1024,
         ('default', 'natural', 'quality', 'water', 'userdata'), bbox=bbox)
-    cloud = _quality(images['quality'])
+    diagnostics.update(_quality_metrics(images['quality']))
     river_obscured = _river_obscured(images['quality']) if require_river else None
-    if cloud > 10 or (require_river and (river_obscured > 10 or not _river_visible(images['water'], classified=True))):
+    diagnostics['river_obscured_percent'] = river_obscured
+    if diagnostics['local_obscured_percent'] > 10 or (require_river and river_obscured > 10):
+        diagnostics['reason'] = _quality_reason(diagnostics, river_obscured, require_river)
         return None
+    if require_river and not _river_visible(images['water'], classified=True):
+        diagnostics['reason'] = 'O rio mapeado não foi detectado nesta passagem; escolha outra data.'
+        return None
+    area = bbox or BBOX
+    if area == BBOX:
+        waterways = river_geojson()['features']
+        gis_status = 'available'
+    else:
+        gis = area_geojson(area)
+        waterways = gis['waterways']['features']
+        gis_status = gis['status']
+    highlighted, water_percent = _integrated_water_image(images['natural'], images['water'],
+                                                          area, waterways)
     product_id = feature['id'].removesuffix('.SAFE')
     record = {'product_id': product_id,
         'algorithm_version': ALGORITHM_VERSION,
         'acquired_at': parsed_time(feature['properties']['datetime']).isoformat(),
-        'cloud_percent': cloud, 'river_obscured_percent': river_obscured,
+        'cloud_percent': diagnostics['local_cloud_percent'],
+        'local_cloud_percent': diagnostics['local_cloud_percent'],
+        'local_no_data_percent': diagnostics['local_no_data_percent'],
+        'local_obscured_percent': diagnostics['local_obscured_percent'],
+        'river_obscured_percent': river_obscured,
+        'gis_status': gis_status, 'gis_waterway_count': len(waterways),
+        'highlighted_water_percent': water_percent,
         'tile': product_id.split('_')[5], 'orbit': product_id.split('_')[4], 'images': {}}
     for view in ('default', 'natural'):
-        blob = images[view]
+        blob = highlighted if view == 'default' else images['natural']
         if verify_png(blob) != (1024, 1024):
             raise ProviderError('Cena Sentinel-2 com dimensões inesperadas')
         key = f'{key_prefix}/{product_id}/{view}.png'
         record['images'][view] = {'key': key, 'sha256': put(key, blob)}
     return record
+
+
+def _quality_reason(metrics, river_obscured, require_river):
+    if metrics['local_no_data_percent'] > 10:
+        return (f"Sem dados Sentinel-2 em {metrics['local_no_data_percent']}% do recorte "
+                '(o percentual de nuvens do tile não mede essa lacuna). Escolha outra passagem.')
+    if metrics['local_cloud_percent'] > 10:
+        return f"Nuvens em {metrics['local_cloud_percent']}% do recorte escolhido; escolha outra passagem."
+    if require_river and river_obscured is not None and river_obscured > 10:
+        return (f'Rio mapeado encoberto ou sem dados em {river_obscured}% do seu corredor; '
+                'escolha outra passagem.')
+    return (f"{metrics['local_obscured_percent']}% do recorte sem leitura confiável "
+            '(sombras, pixels sem classe ou dados inválidos); escolha outra passagem.')
 
 
 def search_period(start: date, end: date, client=None, bbox=None):
@@ -203,13 +298,19 @@ def search_period(start: date, end: date, client=None, bbox=None):
     window_end = min(now(), datetime.combine(end + timedelta(days=16), time.min, timezone.utc))
     area = bbox or BBOX
     features = client.search(area, window_start, window_end, collection=COLLECTION)
-    center = Point((area[0] + area[2]) / 2, (area[1] + area[3]) / 2)
-    def covers_center(feature):
+    bounds = box(*area)
+    def coverage(feature):
         try:
-            return bool(feature.get('geometry') and shape(feature['geometry']).covers(center))
+            footprint = shape(feature['geometry'])
+            return footprint.intersection(bounds).area / bounds.area
         except (TypeError, ValueError, KeyError):
-            return False
-    features.sort(key=lambda feature: not covers_center(feature))
+            return 0.0
+    def tile_cloud(feature):
+        value = feature['properties'].get('eo:cloud_cover')
+        return float(value) if value is not None else 100.0
+    # Multiple products can exist on one date. Prefer one covering the whole
+    # search area; tile-wide cloud percentage is only a secondary tie-breaker.
+    features.sort(key=lambda feature: (-coverage(feature), tile_cloud(feature)))
     found = []
     seen_dates = set()
     for feature in features:
@@ -224,11 +325,12 @@ def search_period(start: date, end: date, client=None, bbox=None):
         distance = (start - day).days if day < start else (day - end).days if day > end else 0
         found.append({'product_id': product_id, 'acquired_at': acquired.isoformat(),
             'distance_days': distance, 'in_period': distance == 0,
-            'tile_cloud_percent': feature['properties'].get('eo:cloud_cover')})
+            'tile_cloud_percent': feature['properties'].get('eo:cloud_cover'),
+            'footprint_coverage_percent': round(100 * coverage(feature), 2)})
     found.sort(key=lambda x: (x['distance_days'], x['acquired_at']))
     return {'start': start.isoformat(), 'end': end.isoformat(), 'margin_days': 15,
         'bbox': area, 'checked_at': now().isoformat(), 'scenes': found[:24],
-        'note': 'Nuvens do catálogo referem-se ao tile inteiro; a prévia verifica o recorte escolhido.'}
+        'note': 'Nuvens do catálogo referem-se ao tile inteiro; a prévia verifica nuvens e cobertura do recorte escolhido.'}
 
 
 def load_search_preview(product_id, bbox=None):
@@ -268,11 +370,17 @@ def create_search_preview(product_id, client=None, bbox=None):
         feature = next((f for f in features if f.get('id', '').removesuffix('.SAFE') == product_id), None)
         if not feature:
             raise ProviderError('Produto não encontrado no catálogo Copernicus')
+        diagnostics = {}
         record = _scene(client, feature, key_prefix=search_key(product_id, area),
-            bbox=area, require_river=area == BBOX)
+            bbox=area, require_river=area == BBOX, diagnostics=diagnostics)
         if record is None:
             record = {'product_id': product_id, 'unavailable': True,
-                'reason': 'Cena encoberta no recorte ou rio não visível'}
+                'reason': diagnostics.get('reason', 'Cena sem leitura confiável no recorte'),
+                'local_cloud_percent': diagnostics.get('local_cloud_percent'),
+                'local_no_data_percent': diagnostics.get('local_no_data_percent'),
+                'local_obscured_percent': diagnostics.get('local_obscured_percent'),
+                'river_obscured_percent': diagnostics.get('river_obscured_percent'),
+                'gis_status': None}
         record['bbox'] = area
         record['algorithm_version'] = ALGORITHM_VERSION
         put(f'{search_key(product_id, area)}/manifest.json',

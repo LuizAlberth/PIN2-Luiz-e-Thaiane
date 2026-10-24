@@ -1,0 +1,44 @@
+.image-viewer { min-width: 0; width: 100%; }
+.image-viewer-toolbar { display: flex; align-items: center; gap: 5px; flex-wrap: wrap; margin: 0 0 8px; color: var(--ink); font-size: 12px; }
+.image-viewer-toolbar > span { font-weight: 700; margin-right: 5px; }
+.image-viewer-toolbar button { border: 1px solid var(--line); border-radius: 4px; background: #fff; color: var(--ink); cursor: pointer; font-size: 12px; font-weight: 700; min-width: 35px; padding: 5px 8px; }
+.image-viewer-toolbar button.active { background: #17394d; color: #fff; border-color: #17394d; }
+.image-viewer-toolbar small { color: var(--muted); margin-left: auto; }
+.image-viewport { position: relative; width: 100%; aspect-ratio: 1; overflow: auto; background: #e8edef; scrollbar-width: thin; }
+.image-viewport.is-zoomed { cursor: grab; }
+.image-viewport.is-zoomed:active { cursor: grabbing; }
+.latest-overlay-viewport { width: 100%; aspect-ratio: 1; overflow: auto; scrollbar-width: thin; }
+.latest-overlay-viewport.is-zoomed { cursor: grab; }
+.latest-overlay-viewport.is-zoomed:active { cursor: grabbing; }
+.image-canvas { position: relative; max-width: none; line-height: 0; }
+.image-canvas > img, .search-preview .image-canvas > img { display: block; width: 100%; max-width: none; height: auto; aspect-ratio: 1; object-fit: contain; }
+.roads-overlay { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; }
+.roads-overlay .road-unmarked { fill: none; stroke: #f7f7f7d9; stroke-width: 2; stroke-linejoin: round; stroke-linecap: round; filter: drop-shadow(0 0 2px #142530); }
+.roads-overlay .road-marked { fill: none; stroke: #ffae45; stroke-width: 5; stroke-linejoin: round; stroke-linecap: round; paint-order: stroke; filter: drop-shadow(0 0 2px #142530); }
+.roads-overlay .road-click-target { fill: none; stroke: transparent; stroke-width: 17; stroke-linejoin: round; stroke-linecap: round; cursor: pointer; pointer-events: stroke; }
+.roads-overlay .road-click-target:focus-visible { stroke: #ffae45a8; outline: none; }
+.latest-pair .image-viewer { padding: 8px; }
+.case-scenes .image-viewer { padding: 8px; }
+.search-preview > .image-viewer, .search-preview > .impact-register { display: block; }
+.search-preview .image-viewport { max-width: none; }
+.image-processing { background: #f2f6f7; border-left: 3px solid #557480; padding: 12px; color: var(--ink); font-size: 13px; }
+.image-error, .gis-warning { background: #fff5f1; border: 1px solid #d28b75; border-left: 4px solid #a84b30; border-radius: 4px; color: #71301f; padding: 12px 14px; font-size: 13px; line-height: 1.45; }
+.image-error strong { display: block; margin-bottom: 3px; }
+.image-local-quality { color: var(--muted); line-height: 1.4; }
+.impact-register { border-top: 1px solid var(--line); padding-top: 13px; margin-top: 3px; }
+.impact-register > strong { display: block; font-size: 13px; color: var(--ink); }
+.impact-register > p { color: var(--muted); margin: 5px 0 12px; font-size: 12px; line-height: 1.45; }
+.impact-show-roads { display: flex; align-items: center; gap: 7px; margin: 8px 0 12px; color: var(--ink); font-size: 12px; font-weight: 650; }
+.impact-add { display: flex; gap: 7px; align-items: stretch; margin: 8px 0; }
+.impact-add select, .impact-add input { flex: 1; min-width: 0; min-height: 36px; border: 1px solid var(--line); border-radius: 4px; background: #fff; padding: 7px 9px; color: var(--ink); font-size: 12px; }
+.impact-add button, .impact-export { border: 1px solid #35576a; border-radius: 4px; background: #fff; color: #17394d; padding: 7px 10px; font-size: 12px; font-weight: 700; cursor: pointer; }
+.impact-add button:disabled { cursor: not-allowed; opacity: .5; }
+.impact-export { margin-top: 10px; background: #17394d; color: #fff; }
+.impact-list { padding: 0; margin: 8px 0; list-style: none; max-height: 160px; overflow-y: auto; border: 1px solid var(--line); border-radius: 4px; }
+.impact-list li { display: flex; gap: 8px; align-items: center; justify-content: space-between; padding: 6px 9px; border-bottom: 1px solid var(--line); font-size: 12px; }
+.impact-list li:last-child { border-bottom: 0; }
+.impact-list li span { overflow-wrap: anywhere; }
+.impact-list li small { display: block; color: var(--muted); }
+.impact-list li button { border: 0; background: transparent; color: #8a3929; cursor: pointer; font-size: 12px; text-decoration: underline; }
+.impact-local-note { display: block; color: var(--muted); margin-top: 7px; }
+@media (max-width: 700px) { .impact-add { flex-wrap: wrap; } .impact-add select, .impact-add input { flex-basis: 100%; } }

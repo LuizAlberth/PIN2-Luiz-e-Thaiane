@@ -1,5 +1,6 @@
 from datetime import datetime, timedelta, timezone
 from uuid import uuid4
+import json
 import unicodedata
 from sqlalchemy import select, update, func, or_
 from sqlalchemy.orm import Session
@@ -214,13 +215,17 @@ def demo_replay(db, config):
     db.commit()
     return result
 
-def enqueue_collection(db, config):
-    # Reuse a queued job, but let a newly activated configuration recover a failed collector.
+def enqueue_collection(db, config, restart_failed=False):
+    # One recurring collector per installation. Only an explicit configuration
+    # activation (or a manual request) may restart a stopped collector.
     due = db.scalar(select(Job).where(Job.kind == 'COLLECT').order_by(Job.created_at.desc()).limit(1))
-    if due and due.status == 'FALHOU' and config.source_mode == 'DCSC' and utc(due.scheduled_for) <= now():
+    if due and due.status in ('FALHOU', 'CONCLUIDO') and restart_failed:
         due.status = 'PENDENTE'
         due.attempts = 0
         due.scheduled_for = now()
+        due.locked_until = None
+        due.last_error = None
+        due.correlation_id = str(uuid4())
         db.commit()
     elif not due:
         db.add(Job(kind='COLLECT', scheduled_for=now(), correlation_id=str(uuid4())))
@@ -258,7 +263,9 @@ def update_event(db, event):
 
 def run_job(db, job, ana=None, cdse=None):
     begin = time.monotonic()
+    started_at = now()
     provider = (active_config(db).source_mode if active_config(db) else 'DCSC') if job.kind == 'COLLECT' else 'CDSE'
+    attempt_detail = None
     try:
         if job.kind == 'COLLECT':
             config = active_config(db)
@@ -272,12 +279,18 @@ def run_job(db, job, ana=None, cdse=None):
                     readings = [{'observed_at': row['observed_at'], 'level_cm': row['water_level_cm'],
                         'quality': 'VALIDA', 'raw': {'provider': 'PDC/DCSC', 'station_timestamp': row['station_timestamp']}}
                         for row in live['items']]
-                ingest(db, config, readings, 'AO_VIVO', job.correlation_id)
+                result = ingest(db, config, readings, 'AO_VIVO', job.correlation_id)
+                latest = max(readings, key=lambda row: parsed_time(row['observed_at'])) if readings else None
+                attempt_detail = {'inserted': result['inserted'], 'events_created': result['events_created'],
+                    'latest_observed_at': latest['observed_at'] if latest else None,
+                    'latest_level_cm': latest.get('level_cm') if latest else None,
+                    'threshold_cm': config.threshold_cm}
                 job.scheduled_for = now() + timedelta(minutes=config.collection_interval_min)
                 job.status = 'PENDENTE'
             else:
                 job.status = 'CONCLUIDO'
             job.attempts = 0
+            job.last_error = None
         else:
             event = db.get(Event, job.event_id)
             config = db.get(Config, event.config_id)
@@ -345,7 +358,8 @@ def run_job(db, job, ana=None, cdse=None):
             job.status = 'CONCLUIDO'
             job.last_error = None
             update_event(db, event)
-        db.add(Attempt(job_id=job.id, provider=provider, status='SUCESSO',
+        db.add(Attempt(job_id=job.id, provider=provider, status='SUCESSO', started_at=started_at,
+            detail=json.dumps(attempt_detail, ensure_ascii=False) if attempt_detail else None,
             duration_ms=int((time.monotonic()-begin)*1000), correlation_id=job.correlation_id))
         job.locked_until = None
         db.commit()
@@ -358,7 +372,8 @@ def run_job(db, job, ana=None, cdse=None):
         job.scheduled_for = now() + timedelta(seconds=delay)
         job.locked_until = None
         job.last_error = str(exc)[:500]
-        db.add(Attempt(job_id=job.id, provider=provider, status='FALHA', detail=job.last_error,
+        db.add(Attempt(job_id=job.id, provider=provider, status='FALHA', started_at=started_at,
+            detail=job.last_error,
             duration_ms=int((time.monotonic()-begin)*1000), correlation_id=job.correlation_id))
         if job.event_id:
             update_event(db, db.get(Event, job.event_id))

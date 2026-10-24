@@ -1,6 +1,7 @@
 from contextlib import asynccontextmanager
 from datetime import date, datetime, timedelta
 import hashlib
+import json
 import os
 from typing import Literal
 from fastapi import Depends, FastAPI, HTTPException, Request, Response
@@ -17,6 +18,7 @@ from .storage import get
 from .station_reference import OFFICIAL_STATION
 from .pdc import PDCClient, live_station
 from .recent_satellite import load_latest, search_period, load_search_preview, create_search_preview, search_bbox, river_geojson
+from .gis_area import area_geojson
 from .satellite_demo import load_pair, HISTORICAL_CONTEXT
 from .image_export import presentation_png
 
@@ -223,6 +225,10 @@ def latest_satellite():
 def pilot_rivers():
     return river_geojson()
 
+@app.get('/api/gis/area')
+def searched_area_gis(lat: float | None = None, lon: float | None = None):
+    return area_geojson(chosen_bbox(lat, lon))
+
 def chosen_bbox(lat: float | None, lon: float | None):
     try:
         return search_bbox(lat, lon)
@@ -239,6 +245,17 @@ def satellite_search(start: date, end: date, lat: float | None = None, lon: floa
     except ProviderError as exc:
         raise HTTPException(503, str(exc)) from exc
 
+@app.get('/api/satellite/search/inspect/{product_id}')
+def satellite_search_inspect(product_id: str, lat: float | None = None, lon: float | None = None):
+    try:
+        bbox = chosen_bbox(lat, lon)
+        preview = load_search_preview(product_id, bbox) or create_search_preview(product_id, bbox=bbox)
+        return {key: preview.get(key) for key in ('product_id', 'bbox', 'reason',
+            'local_cloud_percent', 'local_obscured_percent', 'local_no_data_percent',
+            'river_obscured_percent', 'gis_status')} | {'available': not preview.get('unavailable', False)}
+    except ProviderError as exc:
+        raise HTTPException(503, str(exc)) from exc
+
 @app.get('/api/satellite/search/preview/{product_id}')
 def satellite_search_preview(product_id: str, view: Literal['default', 'natural'] = 'default',
                              scale: int = 1, lat: float | None = None, lon: float | None = None):
@@ -246,7 +263,7 @@ def satellite_search_preview(product_id: str, view: Literal['default', 'natural'
         bbox = chosen_bbox(lat, lon)
         preview = load_search_preview(product_id, bbox) or create_search_preview(product_id, bbox=bbox)
         if not preview or preview.get('unavailable'):
-            raise HTTPException(404, 'Passagem encoberta no recorte ou rio não visível')
+            raise HTTPException(404, preview.get('reason', 'Imagem indisponível neste recorte') if preview else 'Imagem indisponível neste recorte')
         record = preview['images'][view]
         blob = get(record['key'])
         if hashlib.sha256(blob).hexdigest() != record['sha256']:
@@ -368,7 +385,7 @@ def configs(db: Session = Depends(session), user: User = Depends(current_admin))
 def activate_config(payload: ConfigIn, db: Session = Depends(session), user: User = Depends(current_admin)):
     try:
         config = create_config(db, user.id, payload.model_dump())
-        enqueue_collection(db, config)
+        enqueue_collection(db, config, restart_failed=True)
         return config_json(config)
     except (ValueError, ProviderError) as exc:
         db.rollback()
@@ -419,19 +436,27 @@ def replay(payload: ReplayIn, db: Session = Depends(session), user: User = Depen
 def collect(db: Session = Depends(session), user: User = Depends(current_admin)):
     c = active_config(db)
     if not c or c.source_mode not in ('ANA', 'DCSC'): raise HTTPException(422, 'Configure uma integração de coleta')
-    j = db.scalar(select(Job).where(Job.kind == 'COLLECT', Job.status.in_(['PENDENTE','AGUARDANDO_RETRY'])).limit(1))
-    if j:
+    j = db.scalar(select(Job).where(Job.kind == 'COLLECT').order_by(Job.created_at.desc()).limit(1))
+    already_running = bool(j and j.status == 'EM_EXECUCAO')
+    if j and not already_running:
         j.scheduled_for = now()
         j.status = 'PENDENTE'
         j.attempts = 0
-    else:
+        j.locked_until = None
+        j.last_error = None
+        from .models import uid
+        j.correlation_id = uid()
+    elif not j:
         from .models import uid
         j = Job(kind='COLLECT', scheduled_for=now(), correlation_id=uid())
         db.add(j)
+    db.flush()
     from .service import audit
-    audit(db, user.id, 'COLETA_SOLICITADA', c.id)
+    audit(db, user.id, 'COLETA_SOLICITADA', c.id,
+        {'job_id': j.id, 'already_running': already_running})
     db.commit()
-    return {'job_id': j.id}
+    return {'job_id': j.id, 'status': j.status,
+        'scheduled_for': iso(j.scheduled_for), 'already_running': already_running}
 
 @app.get('/api/admin/events')
 def admin_events(db: Session = Depends(session), user: User = Depends(current_admin)):
@@ -447,9 +472,23 @@ def reprocess_event(event_id: str, db: Session = Depends(session), user: User = 
 @app.get('/api/admin/jobs')
 def jobs(db: Session = Depends(session), user: User = Depends(current_admin)):
     items = db.scalars(select(Job).order_by(Job.created_at.desc()).limit(100)).all()
-    return [{'id': j.id, 'event_id': j.event_id, 'kind': j.kind, 'status': j.status,
-        'version': j.version, 'attempts': j.attempts, 'scheduled_for': iso(j.scheduled_for),
-        'last_error': j.last_error} for j in items]
+    result = []
+    for j in items:
+        attempt = db.scalar(select(Attempt).where(Attempt.job_id == j.id)
+            .order_by(Attempt.started_at.desc()).limit(1))
+        last_result = None
+        if attempt and attempt.status == 'SUCESSO' and j.kind == 'COLLECT' and attempt.detail:
+            try:
+                last_result = json.loads(attempt.detail)
+            except (TypeError, ValueError):
+                pass
+        result.append({'id': j.id, 'event_id': j.event_id, 'kind': j.kind,
+            'status': j.status, 'version': j.version, 'attempts': j.attempts,
+            'created_at': iso(j.created_at), 'scheduled_for': iso(j.scheduled_for),
+            'last_attempt_at': iso(attempt.started_at) if attempt else None,
+            'last_attempt_status': attempt.status if attempt else None,
+            'last_result': last_result, 'last_error': j.last_error})
+    return result
 
 @app.get('/api/admin/audit')
 def audits(db: Session = Depends(session), user: User = Depends(current_admin)):
