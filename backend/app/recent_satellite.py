@@ -11,6 +11,8 @@ import math
 import tarfile
 import re
 import threading
+from functools import lru_cache
+from pathlib import Path
 
 from PIL import Image, ImageDraw
 import httpx
@@ -25,6 +27,8 @@ from .storage import get, put
 MANIFEST_KEY = 'latest-sentinel/manifest.json'
 COLLECTION = 'sentinel-2-l2a'
 _preview_lock = threading.Lock()
+ALGORITHM_VERSION = 3
+RIVER_DATA = Path(__file__).resolve().parent / 'assets/pilot_rivers.geojson'
 PRODUCT_PATTERN = re.compile(r'^S2[ABC]_MSIL2A_\d{8}T\d{6}_N\d{4}_R038_T22JFR_\d{8}T\d{6}$')
 SEARCH_PRODUCT_PATTERN = re.compile(r'^S2[ABC]_MSIL2A_\d{8}T\d{6}_N\d{4}_R\d{3}_T\d{2}[A-Z]{3}_\d{8}T\d{6}$')
 SCREEN_SCRIPT = '''//VERSION=3
@@ -35,19 +39,19 @@ function updateOutputMetadata(scenes,inputMetadata,outputMetadata) {
   outputMetadata.userData={tiles:scenes.tiles.map(t=>({productId:t.sentinel2ProductId}))};
 }'''
 UNUSABLE_SCL = (0, 1, 3, 8, 9, 10, 11)
-# Approximate river corridors in the fixed BBOX, measured on the pilot imagery.
-# If the study area changes, these paths must be revalidated before use.
-RIVER_PATHS = (
-    ((.99, .49), (.75, .52), (.62, .47), (.51, .43), (.42, .48),
-     (.41, .61), (.38, .71), (.37, .85), (.26, .98)),
-    ((.42, .48), (.29, .52), (.19, .50), (.18, .34)),
-)
+
+@lru_cache(maxsize=1)
+def river_geojson():
+    data = json.loads(RIVER_DATA.read_text())
+    if data['bbox'] != BBOX or {f['properties']['name'] for f in data['features']} != {'Rio Krauel', 'Rio dos Índios'}:
+        raise ProviderError('Geometria GIS dos rios da área piloto inválida')
+    return data
 
 
 def load_latest():
     try:
         manifest = json.loads(get(MANIFEST_KEY))
-        if manifest['bbox'] != BBOX or manifest['collection'] != COLLECTION:
+        if manifest['bbox'] != BBOX or manifest['collection'] != COLLECTION or manifest.get('algorithm_version') != ALGORITHM_VERSION:
             return None
         if len(manifest['scenes']) != 2:
             return None
@@ -76,9 +80,15 @@ def _river_mask(size):
     width, height = size
     mask = Image.new('L', size, 0)
     draw = ImageDraw.Draw(mask)
-    for path in RIVER_PATHS:
-        draw.line([(round(x * (width - 1)), round(y * (height - 1))) for x, y in path],
-            fill=255, width=max(5, round(width * .055)), joint='curve')
+    west, south, east, north = BBOX
+    for feature in river_geojson()['features']:
+        geometry = feature['geometry']
+        lines = [geometry['coordinates']] if geometry['type'] == 'LineString' else geometry['coordinates']
+        for line in lines:
+            points = [(round((lon - west) / (east - west) * (width - 1)),
+                       round((north - lat) / (north - south) * (height - 1))) for lon, lat in line]
+            if len(points) > 1:
+                draw.line(points, fill=255, width=max(5, round(width * .035)), joint='curve')
     return mask
 
 
@@ -97,19 +107,22 @@ def _river_obscured(blob):
         return round(100 * blocked / count, 2) if count else 100.0
 
 
-def _river_visible(blob):
+def _river_visible(blob, classified=False):
     with Image.open(BytesIO(blob)) as image:
-        rgb = image.convert('RGB')
-        mask = _river_mask(rgb.size)
-        pixels = rgb.load()
+        mask = _river_mask(image.size)
+        decoded = image.convert('L' if classified else 'RGB')
+        pixels = decoded.load()
         inside = mask.load()
         count = water = 0
-        for y in range(rgb.height):
-            for x in range(rgb.width):
+        for y in range(image.height):
+            for x in range(image.width):
                 if inside[x, y]:
                     count += 1
-                    r, g, b = pixels[x, y]
-                    water += r < 40 and 110 < g < 190 and b > 200
+                    if classified:
+                        water += pixels[x, y] > 0
+                    else:
+                        r, g, b = pixels[x, y]
+                        water += r < 40 and 110 < g < 190 and b > 200
         return count > 0 and water / count >= .02
 
 
@@ -161,16 +174,17 @@ def _scene(client, feature, key_prefix='latest-sentinel', bbox=None, require_riv
     if _quality(screening['quality']) > 10 or (require_river and _river_obscured(screening['quality']) > 10):
         return None
     images = _request(client, feature, OPTICAL_SCRIPT, 1024,
-        ('default', 'natural', 'quality', 'userdata'), bbox=bbox)
+        ('default', 'natural', 'quality', 'water', 'userdata'), bbox=bbox)
     cloud = _quality(images['quality'])
     river_obscured = _river_obscured(images['quality']) if require_river else None
-    if cloud > 10 or (require_river and (river_obscured > 10 or not _river_visible(images['default']))):
+    if cloud > 10 or (require_river and (river_obscured > 10 or not _river_visible(images['water'], classified=True))):
         return None
     product_id = feature['id'].removesuffix('.SAFE')
     record = {'product_id': product_id,
+        'algorithm_version': ALGORITHM_VERSION,
         'acquired_at': parsed_time(feature['properties']['datetime']).isoformat(),
         'cloud_percent': cloud, 'river_obscured_percent': river_obscured,
-        'tile': 'T22JFR', 'orbit': 'R038', 'images': {}}
+        'tile': product_id.split('_')[5], 'orbit': product_id.split('_')[4], 'images': {}}
     for view in ('default', 'natural'):
         blob = images[view]
         if verify_png(blob) != (1024, 1024):
@@ -223,7 +237,7 @@ def load_search_preview(product_id, bbox=None):
     area = bbox or BBOX
     try:
         record = json.loads(get(f'{search_key(product_id, area)}/manifest.json'))
-        if record['product_id'] != product_id or record['bbox'] != area:
+        if record['product_id'] != product_id or record['bbox'] != area or record.get('algorithm_version') != ALGORITHM_VERSION:
             return None
         if record.get('unavailable'):
             return record
@@ -260,6 +274,7 @@ def create_search_preview(product_id, client=None, bbox=None):
             record = {'product_id': product_id, 'unavailable': True,
                 'reason': 'Cena encoberta no recorte ou rio não visível'}
         record['bbox'] = area
+        record['algorithm_version'] = ALGORITHM_VERSION
         put(f'{search_key(product_id, area)}/manifest.json',
             json.dumps(record, ensure_ascii=False).encode(), content_type='application/json')
         return record
@@ -302,8 +317,6 @@ def refresh_latest(client=None):
     if not client.ready:
         raise ProviderError('Credenciais Copernicus não configuradas')
     existing = load_latest()
-    if existing and any('river_obscured_percent' not in scene for scene in existing['scenes']):
-        existing = None  # Recheck pairs produced before the river-corridor validation.
     start = now() - timedelta(days=365)
     features = client.search(BBOX, start, now(), collection=COLLECTION)
     features = sorted((f for f in features if '_T22JFR_' in f['id'] and '_R038_' in f['id']),
@@ -329,7 +342,7 @@ def refresh_latest(client=None):
     if features and features[0]['id'].removesuffix('.SAFE') != scenes[-1]['product_id']:
         rejected = _rejected_preview(client, features[0], existing)
     manifest = {'provider': 'Copernicus Data Space Ecosystem', 'collection': COLLECTION,
-        'bbox': BBOX, 'visualization': VISUALIZATION,
+        'bbox': BBOX, 'algorithm_version': ALGORITHM_VERSION, 'visualization': VISUALIZATION,
         'checked_at': now().isoformat(), 'latest_pass': latest_pass,
         'rejected': rejected, 'scenes': scenes}
     put(MANIFEST_KEY, json.dumps(manifest, ensure_ascii=False).encode(), content_type='application/json')

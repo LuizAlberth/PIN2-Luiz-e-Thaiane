@@ -16,7 +16,7 @@ from .adapters import ANAClient, CDSEClient, ProviderError, parsed_time
 from .storage import get
 from .station_reference import OFFICIAL_STATION
 from .pdc import PDCClient, live_station
-from .recent_satellite import load_latest, search_period, load_search_preview, create_search_preview, search_bbox
+from .recent_satellite import load_latest, search_period, load_search_preview, create_search_preview, search_bbox, river_geojson
 from .satellite_demo import load_pair, HISTORICAL_CONTEXT
 from .image_export import presentation_png
 
@@ -217,6 +217,11 @@ def latest_satellite():
             'tile': scene['tile'], 'orbit': scene['orbit'],
             'images': {view: f'/api/satellite/latest/image/{index}?view={view}' for view in ('default', 'natural')}}
             for index, scene in enumerate(manifest['scenes'])]}
+
+
+@app.get('/api/gis/rivers')
+def pilot_rivers():
+    return river_geojson()
 
 def chosen_bbox(lat: float | None, lon: float | None):
     try:

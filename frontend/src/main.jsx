@@ -573,6 +573,16 @@ function DownloadLinks({ url, name }) {
     <a key={scale} href={`${url}${url.includes('?') ? '&' : '?'}scale=${scale}`} download={`${name}-${scale}x.png`}>{scale === 1 ? 'Original' : `${scale}×`}</a>)}
   </div>;
 }
+function RiverOverlay({ gis, bbox }) {
+  if (!gis || !bbox || bbox.some((value, index) => value !== gis.bbox[index])) return null;
+  const [west, south, east, north] = bbox;
+  const lines = gis.features.flatMap((feature) => feature.geometry.type === 'LineString'
+    ? [feature.geometry.coordinates] : feature.geometry.coordinates);
+  return <svg className="gis-overlay" viewBox="0 0 1024 1024" preserveAspectRatio="none" aria-hidden="true">
+    {lines.map((line, index) => <polyline key={index} points={line.map(([lon, lat]) =>
+      `${((lon - west) / (east - west) * 1024).toFixed(1)},${((north - lat) / (north - south) * 1024).toFixed(1)}`).join(' ')} />)}
+  </svg>;
+}
 function SceneCard({ scene, label, view }) {
   const optical = scene?.collection === "sentinel-2-l2a";
   return (
@@ -1574,9 +1584,10 @@ function useRecentSatellite() {
   return { pair, error };
 }
 
-function RecentCompare({ pair, error }) {
+function RecentCompare({ pair, error, gis }) {
   const [view, setView] = useState("default");
   const [overlay, setOverlay] = useState(false);
+  const [showGis, setShowGis] = useState(true);
   const [split, setSplit] = useState(50);
   const scenes = pair?.scenes || [];
   return (
@@ -1596,6 +1607,7 @@ function RecentCompare({ pair, error }) {
             <button className={!overlay ? "active" : ""} onClick={() => setOverlay(false)}>Lado a lado</button>
             <button className={overlay ? "active" : ""} onClick={() => setOverlay(true)}>Sobrepor</button>
           </div>
+          {gis && <button className="gis-toggle" aria-pressed={showGis} onClick={() => setShowGis((value) => !value)}>{showGis ? 'Ocultar eixo GIS' : 'Mostrar eixo GIS'}</button>}
         </div>}
       </div>
       {error ? <p className="data-message">{error}</p> : !pair ? <p className="data-message">Consultando as imagens…</p>
@@ -1605,20 +1617,22 @@ function RecentCompare({ pair, error }) {
             <div className="latest-overlay-images">
               <img src={scenes[0].images[view]} alt={`Rio dos Índios em ${date(scenes[0].acquired_at, { dateStyle: "medium" })}`} />
               <div style={{ clipPath: `inset(0 ${100 - split}% 0 0)` }}><img src={scenes[1].images[view]} alt={`Rio dos Índios em ${date(scenes[1].acquired_at, { dateStyle: "medium" })}`} /></div>
+              {showGis && <RiverOverlay gis={gis} bbox={pair.bbox} />}
               <i style={{ left: `${split}%` }} />
             </div>
             <label>Deslize para comparar as datas<input type="range" min="0" max="100" value={split} onChange={(e) => setSplit(+e.target.value)} /></label>
           </div> : <div className="latest-pair">
             {scenes.map((scene, index) => <figure key={scene.product_id}>
-              <a href={scene.images[view]} target="_blank" rel="noreferrer" title="Abrir imagem em tamanho completo">
+              <div className="geo-image"><a href={scene.images[view]} target="_blank" rel="noreferrer" title="Abrir imagem em tamanho completo">
                 <img src={scene.images[view]} alt={`Rio dos Índios na passagem de ${date(scene.acquired_at, { dateStyle: "medium" })}`} />
-              </a>
+              </a>{showGis && <RiverOverlay gis={gis} bbox={pair.bbox} />}</div>
               <figcaption><strong>{index === 0 ? "Passagem anterior" : "Passagem mais recente utilizável"}</strong><span>{date(scene.acquired_at, { dateStyle: "medium" })} · {scene.river_obscured_percent == null ? `${scene.cloud_percent}% encoberto no recorte` : `${scene.river_obscured_percent}% encoberto no rio`}</span><DownloadLinks url={scene.images[view]} name={`rio-dos-indios-${scene.acquired_at.slice(0,10)}`} /></figcaption>
             </figure>)}
           </div>}
           <div className="latest-notes">
             <p>{pair.latest_pass ? `Última passagem catalogada: ${date(pair.latest_pass.acquired_at, { dateStyle: "medium" })} (${pair.latest_pass.tile_cloud_percent}% de nuvens no tile).` : ""} A comparação usa as últimas passagens com até 10% de pixels encobertos ou inválidos no recorte.{pair.rejected && <> <a className="rejected-link" href={pair.rejected.image_url} target="_blank" rel="noreferrer">Ver imagem encoberta de {date(pair.rejected.acquired_at, { dateStyle: "medium" })} ({pair.rejected.obscured_percent}% do recorte) ↗</a></>}</p>
-            <p>Azul indica possível água por SCL/NDWI; não é uma mancha oficial de inundação. Resolução nativa de 10–20 m. Catálogo consultado em {date(pair.checked_at)}.</p>
+            <p>Azul indica possível água por SCL/NDWI/MNDWI. {gis && <>Quando ativo, o tracejado mostra o eixo dos rios de <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noreferrer">© OpenStreetMap contributors (ODbL)</a>. </>}São camadas indicativas, não uma mancha oficial de inundação. Resolução nativa de 10–20 m. Catálogo consultado em {date(pair.checked_at)}.</p>
+            <p><a href="/api/gis/rivers" download="rios-area-piloto.geojson">Baixar traçado GIS dos rios (GeoJSON)</a></p>
           </div>
           <p className="upscale-note">Os arquivos 2× e 4× usam interpolação para ampliar a apresentação. Não acrescentam detalhes medidos pelo satélite.</p>
         </>}
@@ -1626,7 +1640,7 @@ function RecentCompare({ pair, error }) {
   );
 }
 
-function PeriodSearch() {
+function PeriodSearch({ gis }) {
   const [start, setStart] = useState('');
   const [end, setEnd] = useState('');
   const [lat, setLat] = useState('');
@@ -1669,18 +1683,18 @@ function PeriodSearch() {
       <div className="search-results">{results.scenes.map((scene) => <button type="button" key={scene.product_id} aria-pressed={selected.some((item) => item.product_id === scene.product_id)} className={selected.some((item) => item.product_id === scene.product_id) ? 'selected' : ''} onClick={() => toggle(scene)}>
         <strong>{date(scene.acquired_at, {dateStyle:'medium'})}</strong><span>{scene.in_period ? 'No período' : `${scene.distance_days} dia(s) do período`}</span><small>{scene.tile_cloud_percent == null ? 'Nuvens não informadas' : `${scene.tile_cloud_percent}% nuvens no tile`}</small>
       </button>)}</div>
-      {selected.length > 0 && <><div className="segmented search-view" aria-label="Visualização das imagens"><button className={view === 'default' ? 'active' : ''} onClick={() => setView('default')}>Água destacada</button><button className={view === 'natural' ? 'active' : ''} onClick={() => setView('natural')}>Cor natural</button></div><div className="search-comparison">{[...selected].sort((a, b) => a.acquired_at.localeCompare(b.acquired_at)).map((scene) => <SearchImage key={`${scene.product_id}-${view}`} scene={scene} view={view} locationQuery={locationQuery} bbox={results.bbox} />)}</div><p className="upscale-note">PNG original para relatório; 2×/4× apenas interpolam pixels. A comparação visual não comprova inundação.</p></>}
+      {selected.length > 0 && <><div className="segmented search-view" aria-label="Visualização das imagens"><button className={view === 'default' ? 'active' : ''} onClick={() => setView('default')}>Água destacada</button><button className={view === 'natural' ? 'active' : ''} onClick={() => setView('natural')}>Cor natural</button></div><div className="search-comparison">{[...selected].sort((a, b) => a.acquired_at.localeCompare(b.acquired_at)).map((scene) => <SearchImage key={`${scene.product_id}-${view}`} scene={scene} view={view} locationQuery={locationQuery} bbox={results.bbox} gis={gis} />)}</div><p className="upscale-note">PNG original para relatório; 2×/4× apenas interpolam pixels. {gis && results.bbox.every((value, index) => value === gis.bbox[index]) ? <>Tracejado: eixo de <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noreferrer">© OpenStreetMap contributors (ODbL)</a>.</> : 'Fora da área piloto, não há traçado GIS de rios nesta versão.'} A comparação visual não comprova inundação.</p></>}
     </>}
   </section>;
 }
 
-function SearchImage({ scene, view, locationQuery, bbox }) {
+function SearchImage({ scene, view, locationQuery, bbox, gis }) {
   const [available, setAvailable] = useState(null);
   const preview = `/api/satellite/search/preview/${encodeURIComponent(scene.product_id)}?view=${view}${locationQuery}`;
   const filename = `sentinel-${scene.acquired_at.slice(0,10)}-lat${((bbox[1] + bbox[3]) / 2).toFixed(5)}-lon${((bbox[0] + bbox[2]) / 2).toFixed(5)}`;
   return <figure className={`search-preview ${available === false ? 'unavailable' : ''}`}>
     <figcaption><strong>{date(scene.acquired_at, {dateStyle:'medium'})}</strong><small>Produto: {scene.product_id}</small></figcaption>
-    <a href={preview} target="_blank" rel="noreferrer"><img src={preview} alt={`Imagem Sentinel-2 de ${date(scene.acquired_at, {dateStyle:'medium'})}`} onLoad={() => setAvailable(true)} onError={() => setAvailable(false)} /></a>
+    <div className="geo-image"><a href={preview} target="_blank" rel="noreferrer"><img src={preview} alt={`Imagem Sentinel-2 de ${date(scene.acquired_at, {dateStyle:'medium'})}`} onLoad={() => setAvailable(true)} onError={() => setAvailable(false)} /></a>{available && <RiverOverlay gis={gis} bbox={bbox} />}</div>
     {available === null && <small>Processando e verificando a passagem…</small>}
     {available === false && <small className="preview-unavailable">Cena encoberta ou área piloto sem rio visível. Escolha outra data.</small>}
     {available && <DownloadLinks url={preview} name={filename} />}
@@ -1732,9 +1746,11 @@ function App() {
   const { live, error: liveError } = useLiveStation();
   const monitor = useMonitorStatus();
   const { pair, error: pairError } = useRecentSatellite();
+  const [gis, setGis] = useState(null);
   const [realEvents, setRealEvents] = useState([]);
   const [openCase, setOpenCase] = useState(null);
   const [showAdmin, setShowAdmin] = useState(false);
+  useEffect(() => { api('/gis/rivers').then(setGis).catch(() => {}); }, []);
   useEffect(() => {
     let active = true;
     const load = () => api('/events?mode=AO_VIVO').then((value) => { if (active) setRealEvents(value.items); }).catch(() => {});
@@ -1750,7 +1766,7 @@ function App() {
     </div></header>
     <main>
       <section className="landing-intro"><div className="container"><span className="caps">MONITORAMENTO FLUVIAL · ÁREA DE ESTUDO</span><h1>Nível do rio e imagens de satélite</h1><p>Acompanhe a estação da área piloto ou escolha coordenadas e duas datas para comparar imagens do Copernicus.</p></div></section>
-      <div className="container landing-content"><LiveStation live={live} error={liveError} station={live?.station} monitor={monitor} /><RecentCompare pair={pair} error={pairError} /><PeriodSearch />
+      <div className="container landing-content"><LiveStation live={live} error={liveError} station={live?.station} monitor={monitor} /><RecentCompare pair={pair} error={pairError} gis={gis} /><PeriodSearch gis={gis} />
         {realEvents.length > 0 && <section className="landing-events" id="eventos"><div className="landing-section-head"><div><span className="caps">REGISTROS</span><h2>Eventos monitorados</h2></div></div><div className="event-grid">{realEvents.slice(0, 3).map((event) => <EventCard key={event.id} item={event} open={setOpenCase} />)}</div></section>}
         <section className="landing-history" id="historia"><div><span className="caps">CURIOSIDADE HISTÓRICA</span><h2>Enchente de novembro de 2023</h2><p>Um episódio documentado com imagens Sentinel-2 de antes e depois. Os níveis do replay são simulados.</p><button className="btn ghost" onClick={() => setOpenCase('history-2023')}>Ver história e imagens <Icon name="arrow" size={17} /></button></div><img src="/api/historical/2023/image/BASELINE?view=default" alt="Vista de Presidente Getúlio antes da enchente de 2023" /></section>
         <section className="landing-method" id="sobre"><span className="caps">COMO LER O PAINEL</span><p>O nível vem da estação DCSC-00043 reproduzida pelo <a href="https://pdc.presidentegetulio.sc.gov.br/monitoramento" target="_blank" rel="noreferrer">portal municipal</a>. As imagens vêm do Copernicus. Diferenças visuais não confirmam uma inundação nem substituem alertas oficiais.</p></section>

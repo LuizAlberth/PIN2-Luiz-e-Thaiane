@@ -467,6 +467,19 @@ def test_river_corridor_rejects_cloud_even_when_area_is_mostly_clear():
     assert recent_satellite._river_obscured(out.getvalue()) > 10
     assert recent_satellite._river_visible(load_pair()['BASELINE'][1]['default'])
 
+def test_pilot_gis_centerlines_are_georeferenced_and_public():
+    data = recent_satellite.river_geojson()
+    assert data['bbox'] == BBOX
+    assert {feature['properties']['name'] for feature in data['features']} == {'Rio Krauel', 'Rio dos Índios'}
+    lon, lat = data['features'][0]['geometry']['coordinates'][0]
+    x = round((lon - BBOX[0]) / (BBOX[2] - BBOX[0]) * 1023)
+    y = round((BBOX[3] - lat) / (BBOX[3] - BBOX[1]) * 1023)
+    assert recent_satellite._river_mask((1024, 1024)).getpixel((x, y)) == 255
+    with TestClient(app) as client:
+        response = client.get('/api/gis/rivers')
+        assert response.status_code == 200
+        assert response.json()['attribution'] == '© OpenStreetMap contributors'
+
 def test_historical_pair_is_public_without_a_demo_event(db):
     session, _ = db
     app.dependency_overrides[api_session] = lambda: session

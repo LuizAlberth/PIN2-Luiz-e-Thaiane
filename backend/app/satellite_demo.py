@@ -27,22 +27,26 @@ HISTORICAL_CONTEXT = {
         {'title': 'TJSC · Portaria 115 de 16/11/2023', 'url': 'https://www2.tjsc.jus.br/web/tjsc/atos-normativos-e-suspensao-de-prazos-e-expediente/presidente-getulio/portaria_2023115.pdf'},
         {'title': 'Defesa Civil SC · Registro de emergência por inundação em 04/10/2023', 'url': 'https://estado.sc.gov.br/wp-content/uploads/sites/3/2023/10/emergencia-12.10.pdf'}],
 }
-VISUALIZATION = 'Cor natural (ganho 3,5); água em azul por SCL=6 ou NDWI>0 e NIR<0,15, excluindo sombra/nuvem. Resolução nativa 10–20 m.'
+VISUALIZATION = 'Cor natural (ganho 3,5); possível água em azul por SCL=6 ou NDWI/MNDWI, excluindo sombra, nuvens e neve. Eixo dos rios da área piloto: OpenStreetMap (ODbL). Resolução nativa 10–20 m.'
 
 OPTICAL_SCRIPT = '''//VERSION=3
 function setup() {
-  return {input: ["B02", "B03", "B04", "B08", "SCL", "dataMask"],
+  return {input: ["B02", "B03", "B04", "B08", "B11", "SCL", "dataMask"],
     mosaicking: Mosaicking.TILE,
     output: [{id:"default", bands:4}, {id:"natural", bands:4},
-      {id:"quality", bands:1, sampleType:"UINT8"}]};
+      {id:"quality", bands:1, sampleType:"UINT8"},
+      {id:"water", bands:1, sampleType:"UINT8"}]};
 }
 function evaluatePixel(samples) {
   let s = samples[0];
-  if (!s) return {default:[0,0,0,0], natural:[0,0,0,0], quality:[0]};
+  if (!s) return {default:[0,0,0,0], natural:[0,0,0,0], quality:[0], water:[0]};
   let ndwi = (s.B03-s.B08)/(s.B03+s.B08+0.00001);
-  let water = s.SCL === 6 || (ndwi > 0 && s.B08 < 0.15 && s.SCL !== 3 && s.SCL < 7);
+  let mndwi = (s.B03-s.B11)/(s.B03+s.B11+0.00001);
+  let clear = s.dataMask && ![0,1,2,3,7,8,9,10,11].includes(s.SCL);
+  let spectral = ndwi > 0 && mndwi > -0.02 && s.B08 < 0.16 && s.B03 > s.B04*0.80;
+  let water = clear && (s.SCL === 6 || spectral);
   let rgb = [3.5*s.B04, 3.5*s.B03, 3.5*s.B02];
-  return {default:[...(water ? [0.02,0.58,0.95] : rgb),s.dataMask], natural:[...rgb,s.dataMask], quality:[s.SCL]};
+  return {default:[...(water ? [0.02,0.58,0.95] : rgb),s.dataMask], natural:[...rgb,s.dataMask], quality:[s.SCL], water:[water ? 255 : 0]};
 }
 function updateOutputMetadata(scenes, inputMetadata, outputMetadata) {
   outputMetadata.userData = {tiles: scenes.tiles.map(t => ({productId:t.sentinel2ProductId,

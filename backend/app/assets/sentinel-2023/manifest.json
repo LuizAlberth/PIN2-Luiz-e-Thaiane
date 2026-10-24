@@ -7,9 +7,9 @@
     -49.61,
     -27.0285
   ],
-  "fetched_at": "2026-10-21T22:17:35.326886+00:00",
-  "evalscript": "//VERSION=3\nfunction setup() {\n  return {input: [\"B02\", \"B03\", \"B04\", \"B08\", \"SCL\", \"dataMask\"],\n    mosaicking: Mosaicking.TILE,\n    output: [{id:\"default\", bands:4}, {id:\"natural\", bands:4},\n      {id:\"quality\", bands:1, sampleType:\"UINT8\"}]};\n}\nfunction evaluatePixel(samples) {\n  let s = samples[0];\n  if (!s) return {default:[0,0,0,0], natural:[0,0,0,0], quality:[0]};\n  let ndwi = (s.B03-s.B08)/(s.B03+s.B08+0.00001);\n  let water = s.SCL === 6 || (ndwi > 0 && s.B08 < 0.15 && s.SCL !== 3 && s.SCL < 7);\n  let rgb = [3.5*s.B04, 3.5*s.B03, 3.5*s.B02];\n  return {default:[...(water ? [0.02,0.58,0.95] : rgb),s.dataMask], natural:[...rgb,s.dataMask], quality:[s.SCL]};\n}\nfunction updateOutputMetadata(scenes, inputMetadata, outputMetadata) {\n  outputMetadata.userData = {tiles: scenes.tiles.map(t => ({productId:t.sentinel2ProductId,\n    date:t.date, dataPath:t.dataPath, cloudCoverage:t.cloudCoverage}))};\n}",
-  "visualization": "Cor natural (ganho 3,5); água em azul por SCL=6 ou NDWI>0 e NIR<0,15, excluindo sombra/nuvem. Resolução nativa 10–20 m.",
+  "fetched_at": "2026-10-23T21:33:37.993928+00:00",
+  "evalscript": "//VERSION=3\nfunction setup() {\n  return {input: [\"B02\", \"B03\", \"B04\", \"B08\", \"B11\", \"SCL\", \"dataMask\"],\n    mosaicking: Mosaicking.TILE,\n    output: [{id:\"default\", bands:4}, {id:\"natural\", bands:4},\n      {id:\"quality\", bands:1, sampleType:\"UINT8\"},\n      {id:\"water\", bands:1, sampleType:\"UINT8\"}]};\n}\nfunction evaluatePixel(samples) {\n  let s = samples[0];\n  if (!s) return {default:[0,0,0,0], natural:[0,0,0,0], quality:[0], water:[0]};\n  let ndwi = (s.B03-s.B08)/(s.B03+s.B08+0.00001);\n  let mndwi = (s.B03-s.B11)/(s.B03+s.B11+0.00001);\n  let clear = s.dataMask && ![0,1,2,3,7,8,9,10,11].includes(s.SCL);\n  let spectral = ndwi > 0 && mndwi > -0.02 && s.B08 < 0.16 && s.B03 > s.B04*0.80;\n  let water = clear && (s.SCL === 6 || spectral);\n  let rgb = [3.5*s.B04, 3.5*s.B03, 3.5*s.B02];\n  return {default:[...(water ? [0.02,0.58,0.95] : rgb),s.dataMask], natural:[...rgb,s.dataMask], quality:[s.SCL], water:[water ? 255 : 0]};\n}\nfunction updateOutputMetadata(scenes, inputMetadata, outputMetadata) {\n  outputMetadata.userData = {tiles: scenes.tiles.map(t => ({productId:t.sentinel2ProductId,\n    date:t.date, dataPath:t.dataPath, cloudCoverage:t.cloudCoverage}))};\n}",
+  "visualization": "Cor natural (ganho 3,5); possível água em azul por SCL=6 ou NDWI/MNDWI, excluindo sombra, nuvens e neve. Eixo dos rios da área piloto: OpenStreetMap (ODbL). Resolução nativa 10–20 m.",
   "historical_context": {
     "id": "getulio-novembro-2023",
     "title": "Enchentes de novembro de 2023",
@@ -200,7 +200,7 @@
       },
       "local_cloud_percent": 0.0,
       "checksums": {
-        "default": "6cf569b84a887f0267cd7ef244d53ed672cda04bda9286d3c7c7192e62387fd0",
+        "default": "7624bd04c290740dbdf84ab19e5380a61e8ce4c74b767091e0a28efb3148eb1d",
         "natural": "8497d21b8d03ffca8604d8d95398c5e9fb7f1cf2ddee9c68212a8644f2019d51"
       }
     },
@@ -349,7 +349,7 @@
       },
       "local_cloud_percent": 0.0,
       "checksums": {
-        "default": "ed396f5aba655e402475118fd873da1bb01abce7a4ff0d33f53305f31c88ed33",
+        "default": "b88e95b6a005b014d71cd3e27269b9d13fb00a5bdcc09d46b9a7daae9cff5960",
         "natural": "44c1c12427cd8a83eeea6f8f7a0cc89be3f8090211bdce3bbf2e340d189892c1"
       }
     }
