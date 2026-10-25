@@ -1,5 +1,5 @@
 import os
-from sqlalchemy import create_engine, text, event
+from sqlalchemy import create_engine, text, event, inspect
 from sqlalchemy.engine import URL
 from sqlalchemy.orm import DeclarativeBase, sessionmaker
 
@@ -36,6 +36,9 @@ def initialize():
         with engine.begin() as connection:
             connection.execute(text('CREATE EXTENSION IF NOT EXISTS postgis'))
     Base.metadata.create_all(bind=engine)
+    with engine.begin() as connection:
+        if not any(column['name'] == 'threshold_kind' for column in inspect(connection).get_columns('monitoring_configs')):
+            connection.execute(text("ALTER TABLE monitoring_configs ADD COLUMN threshold_kind VARCHAR(32) NOT NULL DEFAULT 'NAO_CLASSIFICADA'"))
     if engine.dialect.name == 'postgresql':
         with engine.begin() as connection:
             connection.execute(text('''ALTER TABLE monitoring_configs ADD COLUMN IF NOT EXISTS aoi geometry(Polygon,4326)

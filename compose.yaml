@@ -49,7 +49,10 @@ services:
       minio: {condition: service_started}
     restart: unless-stopped
   web:
-    build: ./frontend
+    build:
+      context: ./frontend
+      args:
+        VITE_GOOGLE_MAPS_EMBED_API_KEY: ${VITE_GOOGLE_MAPS_EMBED_API_KEY:-}
     ports:
       - "127.0.0.1:8080:80"
     depends_on: [api]

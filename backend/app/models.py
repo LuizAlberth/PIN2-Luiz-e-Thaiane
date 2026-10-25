@@ -34,6 +34,7 @@ class Config(Base):
     station_lon: Mapped[float] = mapped_column(Float)
     bbox: Mapped[list] = mapped_column(JSONType)
     threshold_cm: Mapped[float] = mapped_column(Float)
+    threshold_kind: Mapped[str] = mapped_column(String(32), default='NAO_CLASSIFICADA', server_default='NAO_CLASSIFICADA')
     threshold_source: Mapped[str] = mapped_column(Text)
     threshold_valid_from: Mapped[datetime] = mapped_column(DateTime(timezone=True))
     threshold_responsible: Mapped[str] = mapped_column(String(150))

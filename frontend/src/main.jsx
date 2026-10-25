@@ -1,4 +1,4 @@
-import React, { useEffect, useRef, useState } from "react";
+import React, { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 import "./style.css";
 import "./imagery.css";
@@ -36,6 +36,12 @@ const cm = (x) =>
     : `${Number(x).toLocaleString("pt-BR", { maximumFractionDigits: 1 })} cm`;
 const meters = (x) =>
   x == null ? "—" : `${(Number(x) / 100).toLocaleString("pt-BR", { minimumFractionDigits: 2, maximumFractionDigits: 2 })} m`;
+const referenceNames = {
+  ATENCAO: 'Atenção', ALERTA: 'Alerta', TRANSBORDAMENTO: 'Transbordamento/inundação',
+  EMERGENCIA: 'Emergência', OUTRA: 'Outra referência técnica',
+  NAO_CLASSIFICADA: 'Sem categoria local cadastrada', SIMULACAO: 'Simulação',
+};
+const referenceName = (kind) => referenceNames[kind] || 'Sem categoria local cadastrada';
 const names = {
   ATUALIZADO: "Atualizado",
   ATRASADO: "Dado atrasado",
@@ -173,7 +179,7 @@ function useMonitorStatus() {
 }
 function LiveStation({ live, error, station, monitor, compact = false }) {
   const current = live?.latest;
-  const experimental = monitor?.config?.source_mode === 'DCSC';
+  const configuredReference = monitor?.config?.source_mode === 'DCSC' ? monitor.config : null;
   return (
     <section className={`live-station ${compact ? "compact" : ""}`} id={!compact ? "monitoramento" : undefined}>
       <div className="live-station-head">
@@ -196,7 +202,7 @@ function LiveStation({ live, error, station, monitor, compact = false }) {
         {!compact && <div className="live-chart">
           <span className="caps">COMO O NÍVEL DO RIO MUDOU</span>
           <Graph readings={live?.items || []} threshold={null} />
-          {experimental && <small>Referência do projeto: {meters(monitor.config.threshold_cm)}. Critério experimental definido no Admin; não é cota oficial de alerta.</small>}
+          {configuredReference && <small>Referência cadastrada: {meters(configuredReference.threshold_cm)} · {referenceName(configuredReference.threshold_kind)}. {configuredReference.trigger_enabled === false ? 'Valor anterior de exemplo: novos gatilhos suspensos até o Admin cadastrar uma cota local.' : 'Valor informado pelo Admin para esta estação.'} Não é alerta oficial.</small>}
         </div>}
       </div>
       {error && !current && <div className="error inline-error" role="alert"><strong>Leitura indisponível.</strong> {error}</div>}
@@ -579,6 +585,63 @@ function DownloadLinks({ url, name }) {
 function scaledImageUrl(url, scale) {
   return `${url}${url.includes('?') ? '&' : '?'}scale=${scale}`;
 }
+const googleMapsEmbedKey = (import.meta.env.VITE_GOOGLE_MAPS_EMBED_API_KEY || '').trim();
+
+function mapFocus(bbox, viewport) {
+  const [west, south, east, north] = bbox;
+  const x = viewport ? (viewport.scrollLeft + viewport.clientWidth / 2) / viewport.scrollWidth : .5;
+  const y = viewport ? (viewport.scrollTop + viewport.clientHeight / 2) / viewport.scrollHeight : .5;
+  return {
+    lat: +(north - Math.min(1, Math.max(0, y)) * (north - south)).toFixed(6),
+    lon: +(west + Math.min(1, Math.max(0, x)) * (east - west)).toFixed(6),
+  };
+}
+function imageFocus(bbox, lon, lat) {
+  const [west, south, east, north] = bbox;
+  return { x: (lon - west) / (east - west), y: (north - lat) / (north - south) };
+}
+function nearestWaterwayFocus(bbox, features) {
+  let chosen = { x: .5, y: .5 }, distance = Infinity;
+  for (const feature of features || []) {
+    const geometry = feature.geometry;
+    const lines = geometry?.type === 'LineString' ? [geometry.coordinates] : geometry?.type === 'MultiLineString' ? geometry.coordinates : [];
+    for (const line of lines) for (const [lon, lat] of line) {
+      const point = imageFocus(bbox, lon, lat);
+      const candidate = (point.x - .5) ** 2 + (point.y - .5) ** 2;
+      if (candidate < distance && point.x >= 0 && point.x <= 1 && point.y >= 0 && point.y <= 1) {
+        chosen = point; distance = candidate;
+      }
+    }
+  }
+  return chosen;
+}
+
+function MapReference({ bbox, viewport, scale }) {
+  const [open, setOpen] = useState(false);
+  const [focus, setFocus] = useState(null);
+  if (!Array.isArray(bbox) || bbox.length !== 4 || !bbox.every(Number.isFinite)) return null;
+  const center = focus || mapFocus(bbox);
+  const zoom = 15 + Math.round(Math.log2(scale));
+  const coordinates = `${center.lat},${center.lon}`;
+  const mapsUrl = `https://www.google.com/maps/@?${new URLSearchParams({ api: '1', map_action: 'map', center: coordinates, zoom: String(zoom), basemap: 'satellite' })}`;
+  const embedUrl = googleMapsEmbedKey && `https://www.google.com/maps/embed/v1/view?${new URLSearchParams({ key: googleMapsEmbedKey, center: coordinates, zoom: String(zoom), maptype: 'satellite', language: 'pt-BR' })}`;
+  const updateFocus = () => setFocus(mapFocus(bbox, viewport.current));
+  return <aside className="map-reference" aria-label="Referência cartográfica separada da imagem Sentinel">
+    <button type="button" className="map-reference-toggle" aria-expanded={open} onClick={() => { if (!open) updateFocus(); setOpen(!open); }}>
+      {open ? 'Ocultar contexto Google Maps' : 'Ver contexto Google Maps'}
+    </button>
+    {open && <div className="map-reference-content">
+      <strong>Referência cartográfica</strong>
+      <p>Imagem Google: data da captura não informada; apenas contexto cartográfico. O rio deste período deve ser avaliado na imagem Sentinel acima.</p>
+      <div className="map-reference-actions">
+        <button type="button" onClick={updateFocus}>Centralizar no trecho visível</button>
+        <a href={mapsUrl} target="_blank" rel="noreferrer">Abrir no Google Maps ↗</a>
+      </div>
+      {embedUrl ? <iframe key={embedUrl} title={`Contexto Google Maps em ${coordinates}`} src={embedUrl} loading="lazy" referrerPolicy="strict-origin-when-cross-origin" allowFullScreen />
+        : <p className="map-reference-unconfigured">O mapa integrado depende de uma chave da Maps Embed API. Use o link acima para consultar este ponto no Google Maps.</p>}
+    </div>}
+  </aside>;
+}
 function roadPaths(road, bbox) {
   const [west, south, east, north] = bbox;
   const lines = road.geometry.type === 'LineString' ? [road.geometry.coordinates] : road.geometry.coordinates;
@@ -594,17 +657,88 @@ function RoadOverlay({ roads, bbox, selectedRoads, onToggle, showRoads }) {
     </g>))}
   </svg>;
 }
-function ZoomableImage({ url, alt, roads, bbox, selectedRoads = [], onToggleRoad, showRoads = false, onAvailability }) {
+function viewportCenter(element) {
+  if (!element?.scrollWidth || !element?.scrollHeight) return { x: .5, y: .5 };
+  return {
+    x: (element.scrollLeft + element.clientWidth / 2) / element.scrollWidth,
+    y: (element.scrollTop + element.clientHeight / 2) / element.scrollHeight,
+  };
+}
+function centerViewport(element, center) {
+  if (!element) return;
+  element.scrollLeft = center.x * element.scrollWidth - element.clientWidth / 2;
+  element.scrollTop = center.y * element.scrollHeight - element.clientHeight / 2;
+}
+function useLinkedImages() {
+  const [linked, setLinked] = useState(true);
+  const controller = useRef(null);
+  if (!controller.current) controller.current = {
+    linked: true,
+    viewers: new Map(),
+    register(id, viewer) {
+      const first = this.viewers.values().next().value;
+      this.viewers.set(id, viewer);
+      if (this.linked && first) viewer.applyView(first.getView());
+      return () => this.viewers.delete(id);
+    },
+    publish(id, view) {
+      if (!this.linked) return;
+      for (const [otherId, viewer] of this.viewers) if (otherId !== id) viewer.applyView(view);
+    },
+    align() {
+      const first = this.viewers.entries().next().value;
+      if (first) this.publish(first[0], first[1].getView());
+    },
+  };
+  function toggle() {
+    const next = !linked;
+    controller.current.linked = next;
+    setLinked(next);
+    if (next) controller.current.align();
+  }
+  return { linked, toggle, controller: controller.current };
+}
+function ZoomableImage({ url, alt, roads, bbox, selectedRoads = [], onToggleRoad, showRoads = false,
+  onAvailability, syncController, syncId, focus = { x: .5, y: .5 }, focusLabel = 'Focar no trecho' }) {
   const [scale, setScale] = useState(1);
   const viewport = useRef(null);
   const drag = useRef(null);
-  useEffect(() => {
+  const scaleRef = useRef(scale);
+  const centerRef = useRef({ x: .5, y: .5 });
+  const applying = useRef(false);
+  scaleRef.current = scale;
+  useLayoutEffect(() => {
     const element = viewport.current;
     if (element) {
-      element.scrollLeft = (element.scrollWidth - element.clientWidth) / 2;
-      element.scrollTop = (element.scrollHeight - element.clientHeight) / 2;
+      centerViewport(element, centerRef.current);
+      if (!applying.current) syncController?.publish(syncId, { scale, ...viewportCenter(element) });
+      else requestAnimationFrame(() => { applying.current = false; });
     }
   }, [scale, url]);
+  useEffect(() => syncController?.register(syncId, {
+    getView: () => ({ scale: scaleRef.current, ...viewportCenter(viewport.current) }),
+    applyView: (view) => {
+      if (![1, 2, 4].includes(view.scale)) return;
+      applying.current = true;
+      centerRef.current = { x: view.x, y: view.y };
+      if (scaleRef.current !== view.scale) setScale(view.scale);
+      else {
+        centerViewport(viewport.current, centerRef.current);
+        requestAnimationFrame(() => { applying.current = false; });
+      }
+    },
+  }), [syncController, syncId]);
+  function changeScale(value) {
+    centerRef.current = viewportCenter(viewport.current);
+    setScale(value);
+  }
+  function focusArea() {
+    centerRef.current = focus;
+    if (scale === 2) {
+      centerViewport(viewport.current, focus);
+      syncController?.publish(syncId, { scale, ...viewportCenter(viewport.current) });
+    } else setScale(2);
+  }
   function startDrag(event) {
     if (scale === 1 || event.target.closest?.('.road-click-target')) return;
     const element = viewport.current;
@@ -618,13 +752,17 @@ function ZoomableImage({ url, alt, roads, bbox, selectedRoads = [], onToggleRoad
     element.scrollTop = drag.current.top - (event.clientY - drag.current.y);
   }
   return <div className="image-viewer">
-    <div className="image-viewer-toolbar" aria-label="Ampliação interativa"><span>Visualizar</span>{[1, 2, 4].map((value) => <button key={value} type="button" aria-pressed={scale === value} className={scale === value ? 'active' : ''} onClick={() => setScale(value)}>{value === 1 ? 'Ajustar à tela' : `${value}×`}</button>)}<small>{scale > 1 ? 'Arraste para explorar' : 'Amplie para examinar'}</small></div>
-    <div className={`image-viewport ${scale > 1 ? 'is-zoomed' : ''}`} ref={viewport} onPointerDown={startDrag} onPointerMove={moveDrag} onPointerUp={() => { drag.current = null; }} onPointerCancel={() => { drag.current = null; }}>
+    <div className="image-viewer-toolbar" aria-label="Ampliação interativa"><span>Visualizar</span>{[1, 2, 4].map((value) => <button key={value} type="button" aria-pressed={scale === value} className={scale === value ? 'active' : ''} onClick={() => changeScale(value)}>{value === 1 ? 'Ajustar à tela' : `${value}×`}</button>)}<button type="button" onClick={focusArea}>{focusLabel}</button><small>{scale > 1 ? 'Arraste para explorar' : 'Amplie para examinar'}</small></div>
+    <div className={`image-viewport ${scale > 1 ? 'is-zoomed' : ''}`} ref={viewport} onScroll={(event) => {
+      centerRef.current = viewportCenter(event.currentTarget);
+      if (!applying.current) syncController?.publish(syncId, { scale: scaleRef.current, ...centerRef.current });
+    }} onPointerDown={startDrag} onPointerMove={moveDrag} onPointerUp={() => { drag.current = null; }} onPointerCancel={() => { drag.current = null; }}>
       <div className="image-canvas" style={{ width: `${scale * 100}%` }}>
-        <img src={scaledImageUrl(url, scale)} alt={alt} onLoad={() => onAvailability?.(true)} onError={() => onAvailability?.(false)} />
+        <img src={scaledImageUrl(url, scale)} alt={alt} onLoad={() => { centerViewport(viewport.current, centerRef.current); onAvailability?.(true); }} onError={() => onAvailability?.(false)} />
         {onToggleRoad && <RoadOverlay roads={roads} bbox={bbox} selectedRoads={selectedRoads} onToggle={onToggleRoad} showRoads={showRoads} />}
       </div>
     </div>
+    <MapReference bbox={bbox} viewport={viewport} scale={scale} />
   </div>;
 }
 function SceneCard({ scene, label, view }) {
@@ -976,7 +1114,7 @@ function About() {
           [
             "01",
             "Coletar",
-            "O painel coleta a série pública DCSC-00043. A referência do projeto é experimental e não substitui cota oficial.",
+            "O painel coleta a série pública DCSC-00043. O administrador cadastra a cota local e sua fonte; isso não substitui um alerta oficial.",
           ],
           [
             "02",
@@ -1037,10 +1175,11 @@ function Admin({ open }) {
     station_code: "DCSC-00043",
     river: "Rio dos Índios",
     bbox: "",
-    threshold_cm: "300",
-    threshold_source: "Parâmetro experimental do projeto; não é alerta oficial",
+    threshold_cm: "",
+    threshold_kind: "",
+    threshold_source: "",
     threshold_valid_from: new Date().toISOString().slice(0, 10),
-    threshold_responsible: "Equipe do projeto",
+    threshold_responsible: "",
     collection_interval_min: 5,
     baseline_min_days: 15,
     baseline_max_days: 30,
@@ -1118,6 +1257,8 @@ function Admin({ open }) {
   }
   function activate() {
     perform(async () => {
+      if (!form.threshold_kind || !form.threshold_cm || !form.threshold_source.trim() || !form.threshold_responsible.trim())
+        throw Error('Informe categoria, valor, documento de origem e responsável pela cota local');
       let bbox = sourceMode === 'DCSC' ? [-49.632, -27.048, -49.610, -27.0285] : form.bbox.split(",").map(Number);
       if (bbox.length !== 4 || bbox.some((v) => !Number.isFinite(v)))
         throw Error("Informe oeste, sul, leste, norte");
@@ -1196,7 +1337,7 @@ function Admin({ open }) {
   const jobsById = Object.fromEntries(model.jobs.map((j) => [j.id, j]));
   const helpText = {
     overview: "Confira a configuração ativa, as integrações e os eventos registrados. Coletar agora consulta a estação; um evento real só aparece se as leituras cruzarem a referência configurada.",
-    config: "Escolha Defesa Civil DCSC-00043 para coletar sem ANA. Informe uma referência experimental, sua origem, o responsável e a data de validade; depois clique em Validar e ativar. Confira o resultado em Processamento.",
+    config: "Escolha a fonte da estação. Cadastre o tipo e o valor da cota local em centímetros, o documento que a sustenta, o responsável e a validade; depois clique em Validar e ativar. A COBRADE classifica desastres, mas não fornece cotas para esta estação.",
     jobs: "Cada linha mostra quando o trabalho entrou na fila, a última tentativa e o resultado. A coleta busca leituras; eventos dependem de cruzamento da referência. Erros e próximas tentativas aparecem aqui.",
     audit: "Registra quem solicitou uma coleta, alterou uma configuração ou iniciou uma demonstração, com data e detalhes para consulta.",
   };
@@ -1204,9 +1345,9 @@ function Admin({ open }) {
     ["station_code", "Código ANA"],
     ["river", "Rio"],
     ["bbox", "Área [oeste, sul, leste, norte]"],
-    ["threshold_cm", "Cota de referência (cm)"],
+    ["threshold_cm", "Valor da cota local (cm)"],
     ["threshold_valid_from", "Válida desde"],
-    ["threshold_source", "Fonte oficial da cota"],
+    ["threshold_source", "Documento ou estudo que definiu a cota"],
     ["threshold_responsible", "Responsável pelo cadastro"],
     ["collection_interval_min", "Coleta (minutos)"],
     ["baseline_min_days", "Referência: mínimo de dias antes"],
@@ -1214,8 +1355,8 @@ function Admin({ open }) {
     ["post_window_days", "Janela posterior (dias)"],
   ];
   const dcscFields = [
-    ["threshold_cm", "Referência experimental (cm)"],
-    ["threshold_source", "Origem do parâmetro"],
+    ["threshold_cm", "Valor da cota local (cm)"],
+    ["threshold_source", "Documento ou estudo que definiu a cota"],
     ["threshold_responsible", "Responsável pelo cadastro"],
     ["threshold_valid_from", "Válida desde"],
     ["collection_interval_min", "Coleta (minutos)"],
@@ -1253,7 +1394,7 @@ function Admin({ open }) {
       </div>
       {help && <div className="admin-help-panel" role="note">
         {help === "setup" ? <><strong>Configurar uma situação completa</strong><ol>
-          <li>Em Configuração, escolha DCSC-00043, ajuste a referência experimental e registre origem, responsável e validade. Ative a configuração.</li>
+          <li>Em Configuração, escolha a estação, o tipo de cota local, seu valor, a fonte, o responsável e a validade. Ative a configuração.</li>
           <li>Na Visão geral, clique em Coletar agora. Confira data, leitura e resultado na aba Processamento.</li>
           <li>Um evento indicativo nasce após uma leitura abaixo e duas leituras seguidas acima da referência em até 30 minutos. Se o rio estiver abaixo, nenhum evento será criado.</li>
           <li>Quando houver evento, acompanhe imagens e tentativas em Processamento; consulte a ação em Auditoria.</li>
@@ -1275,11 +1416,11 @@ function Admin({ open }) {
               <h3>{current?.station_name || "Nenhuma estação ativa"}</h3>
               <p>
                 {current
-                  ? `${current.station_code} · cota ${cm(current.threshold_cm)} · versão ${current.version}`
+                  ? `${current.station_code} · ${referenceName(current.threshold_kind)}: ${cm(current.threshold_cm)} · versão ${current.version}`
                   : "Ative uma configuração real ou a demonstração."}
               </p>
-              <Badge tone={current?.source_mode === "DEMO" ? "amber" : "green"}>
-                {current?.source_mode === "DEMO"
+              <Badge tone={current?.source_mode === "DEMO" || current?.trigger_enabled === false ? "amber" : "green"}>
+                {current?.trigger_enabled === false ? 'Cota pendente' : current?.source_mode === "DEMO"
                   ? "Simulação"
                   : current
                     ? current.source_mode
@@ -1427,7 +1568,7 @@ function Admin({ open }) {
               >
                 Coletar agora
               </button>
-              <p className="collection-explainer">Coletar consulta a estação; o evento depende do cruzamento da referência. {current.source_mode === "DCSC" && stationLive?.latest?.water_level_cm != null && <>Leitura publicada: <strong>{cm(stationLive.latest.water_level_cm)}</strong>; referência configurada: <strong>{cm(current.threshold_cm)}</strong>.</>}</p>
+              <p className="collection-explainer">Coletar consulta a estação; o evento depende do cruzamento da referência. {current.trigger_enabled === false ? 'Novos gatilhos estão suspensos: substitua o valor anterior de exemplo por uma cota local documentada em Configuração.' : current.source_mode === "DCSC" && stationLive?.latest?.water_level_cm != null && <>Leitura publicada: <strong>{cm(stationLive.latest.water_level_cm)}</strong>; referência configurada: <strong>{cm(current.threshold_cm)}</strong>.</>}</p>
               {lastCollection && <div className="collection-status" role="status"><strong>Última coleta</strong><span>{lastCollection.last_attempt_at ? date(lastCollection.last_attempt_at) : "Aguardando primeira execução"}</span><Badge tone={lastCollection.last_attempt_status === "SUCESSO" ? "green" : "amber"}>{lastCollection.last_attempt_status === "SUCESSO" ? "Executada" : lastCollection.last_error ? "Erro" : "Na fila"}</Badge>{lastCollection.last_result && <small>{lastCollection.last_result.inserted} novas leituras · {lastCollection.last_result.events_created?.length || 0} eventos criados</small>}{lastCollection.last_error && <small className="collection-error">{lastCollection.last_error}</small>}</div>}
               {current?.source_mode === "ANA" && <>
               <div className="replay-field">
@@ -1465,8 +1606,9 @@ function Admin({ open }) {
           <article className="panel">
             <span className="caps">COLETA AO VIVO</span>
             <h3>Ativar nova configuração</h3>
-            <label className="source-choice">Fonte de leitura<select value={sourceMode} onChange={(e) => {const mode=e.target.value;setSourceMode(mode);setForm({...form,station_code:mode==='DCSC'?'DCSC-00043':'83372100',river:mode==='DCSC'?'Rio dos Índios':'Rio Krauel',bbox:'',threshold_source:mode==='DCSC'?'Parâmetro experimental do projeto; não é alerta oficial':''});}}><option value="DCSC">Defesa Civil DCSC-00043</option><option value="ANA">ANA (requer credenciais)</option></select></label>
-            <p className="admin-source-note">{sourceMode === 'DCSC' ? 'A estação DCSC publica níveis reais. O exemplo de 300 cm é experimental: um registro indicativo exige duas leituras seguidas acima da referência após uma leitura abaixo. Não é alerta oficial. Ajuste a referência com a equipe responsável antes de uso operacional.' : 'ANA exige credenciais, estação fluviométrica operante, leitura recente e cota documentada.'}</p>
+            <label className="source-choice">Fonte de leitura<select value={sourceMode} onChange={(e) => {const mode=e.target.value;setSourceMode(mode);setForm({...form,station_code:mode==='DCSC'?'DCSC-00043':'83372100',river:mode==='DCSC'?'Rio dos Índios':'Rio Krauel',bbox:'',threshold_cm:'',threshold_kind:'',threshold_source:'',threshold_responsible:''});}}><option value="DCSC">Defesa Civil DCSC-00043</option><option value="ANA">ANA (requer credenciais)</option></select></label>
+            <p className="admin-source-note">{sourceMode === 'DCSC' ? 'Cadastre uma cota definida para a estação DCSC-00043 por sua equipe. O sistema cria apenas registros indicativos após o cruzamento da cota; não emite alerta oficial.' : 'ANA exige credenciais, estação fluviométrica operante, leitura recente e cota local documentada.'} A <a href="https://www.gov.br/mdr/pt-br/centrais-de-conteudo/publicacoes/protecao-e-defesa-civil-sedec/DOCU_cobrade2.pdf" target="_blank" rel="noreferrer">COBRADE</a> classifica inundações, enxurradas e alagamentos; não define centímetros para a estação.</p>
+            <label className="source-choice">Tipo da referência local<select value={form.threshold_kind} onChange={(e) => setForm({...form, threshold_kind:e.target.value})} required><option value="">Selecione o tipo</option>{['ATENCAO','ALERTA','TRANSBORDAMENTO','EMERGENCIA','OUTRA'].map((kind) => <option key={kind} value={kind}>{referenceName(kind)}</option>)}</select></label>
             <div className="form-grid">
               {(sourceMode === 'DCSC' ? dcscFields : fields).map(([key, label]) => (
                 <label
@@ -1491,6 +1633,8 @@ function Admin({ open }) {
                           : "text"
                     }
                     step={key === "threshold_cm" ? "0.01" : undefined}
+                    min={key === "threshold_cm" ? "0.01" : undefined}
+                    placeholder={key === 'threshold_source' ? 'Plano, levantamento de campo ou estudo hidrológico' : key === 'threshold_responsible' ? 'Nome e função' : undefined}
                     value={form[key]}
                     onChange={(e) =>
                       setForm({ ...form, [key]: e.target.value })
@@ -1531,15 +1675,15 @@ function Admin({ open }) {
                     <strong>
                       v{c.version} · {c.station_code}
                     </strong>
-                    <Badge tone={c.active ? "green" : "neutral"}>
-                      {c.active ? "Ativa" : "Encerrada"}
+                    <Badge tone={c.active && c.trigger_enabled === false ? "amber" : c.active ? "green" : "neutral"}>
+                      {c.active && c.trigger_enabled === false ? "Coleta ativa · gatilho suspenso" : c.active ? "Ativa" : "Encerrada"}
                     </Badge>
                   </div>
                   <small>
                     {date(c.valid_from)} · {c.source_mode}
                   </small>
                   <p>
-                    Cota {cm(c.threshold_cm)} · {c.threshold_source}
+                    {referenceName(c.threshold_kind)} · {cm(c.threshold_cm)} · {c.threshold_source}
                   </p>
                 </div>
               ))}
@@ -1658,6 +1802,7 @@ function RecentCompare({ pair, error }) {
   const [overlayScale, setOverlayScale] = useState(1);
   const overlayViewport = useRef(null);
   const overlayDrag = useRef(null);
+  const linkedImages = useLinkedImages();
   useEffect(() => {
     const element = overlayViewport.current;
     if (element) {
@@ -1688,6 +1833,7 @@ function RecentCompare({ pair, error }) {
       {error ? <p className="error" role="alert">{error}</p> : !pair ? <p className="data-message">Consultando as imagens…</p>
         : !pair.available ? <p className="data-message">{pair.reason}</p>
         : <>
+          {!overlay && <label className="compare-lock"><input type="checkbox" checked={linkedImages.linked} onChange={linkedImages.toggle} /> Sincronizar zoom e posição <span>{linkedImages.linked ? 'As duas datas acompanham o arrasto' : 'Cada data pode ser movida separadamente'}</span></label>}
           {overlay ? <div className="latest-overlay">
             <div className="image-viewer-toolbar" aria-label="Ampliação da sobreposição"><span>Visualizar</span>{[1, 2, 4].map((value) => <button key={value} type="button" aria-pressed={overlayScale === value} className={overlayScale === value ? 'active' : ''} onClick={() => setOverlayScale(value)}>{value === 1 ? 'Ajustar à tela' : `${value}×`}</button>)}</div>
             <div className={`latest-overlay-viewport ${overlayScale > 1 ? 'is-zoomed' : ''}`} ref={overlayViewport}
@@ -1701,9 +1847,10 @@ function RecentCompare({ pair, error }) {
               </div>
             </div>
             <label>Deslize para comparar as datas<input type="range" min="0" max="100" value={split} onChange={(e) => setSplit(+e.target.value)} /></label>
+            <MapReference bbox={pair.bbox} viewport={overlayViewport} scale={overlayScale} />
           </div> : <div className="latest-pair">
             {scenes.map((scene, index) => <figure key={scene.product_id}>
-              <ZoomableImage url={scene.images[view]} alt={`Rio dos Índios na passagem de ${date(scene.acquired_at, { dateStyle: "medium" })}`} />
+              <ZoomableImage url={scene.images[view]} bbox={pair.bbox} alt={`Rio dos Índios na passagem de ${date(scene.acquired_at, { dateStyle: "medium" })}`} syncController={linkedImages.controller} syncId={scene.product_id} focus={imageFocus(pair.bbox, -49.6215927, -27.0372597)} focusLabel="Focar no rio" />
               <figcaption><strong>{index === 0 ? "Passagem anterior" : "Passagem mais recente utilizável"}</strong><span>{date(scene.acquired_at, { dateStyle: "medium" })} · {scene.river_obscured_percent == null ? `${scene.cloud_percent}% encoberto no recorte` : `${scene.river_obscured_percent}% encoberto no rio`}</span><DownloadLinks url={scene.images[view]} name={`rio-dos-indios-${scene.acquired_at.slice(0,10)}`} /></figcaption>
             </figure>)}
           </div>}
@@ -1734,6 +1881,7 @@ function PeriodSearch() {
   const [areaLoading, setAreaLoading] = useState(false);
   const [areaError, setAreaError] = useState('');
   const searchRequest = useRef(0);
+  const linkedImages = useLinkedImages();
   async function submit(event) {
     event.preventDefault();
     const request = ++searchRequest.current;
@@ -1777,7 +1925,8 @@ function PeriodSearch() {
         {areaLoading && <p className="search-note" role="status">Consultando rios e ruas no GIS desta localização…</p>}
         {areaError && <p className="gis-warning" role="status">Ruas do OpenStreetMap indisponíveis agora: {areaError}. Você ainda pode anotar uma rua manualmente.</p>}
         {area?.status && area.status !== 'available' && <p className="gis-warning" role="status">{area.message || 'Cartografia indisponível para este recorte.'} Você ainda pode anotar uma rua manualmente.</p>}
-        <div className="search-comparison">{[...selected].sort((a, b) => a.acquired_at.localeCompare(b.acquired_at)).map((scene) => <SearchImage key={`${scene.product_id}-${view}-${results.bbox.join(',')}`} scene={scene} view={view} locationQuery={locationQuery} bbox={results.bbox} area={area} />)}</div><p className="upscale-note">Amplie e anote as ruas no próprio painel; baixe o PNG só quando precisar. Quando a cartografia está disponível, o destaque de água combina a análise espectral com a referência GIS desta localização. Dados cartográficos: <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noreferrer">© OpenStreetMap contributors (ODbL)</a>. A comparação visual não comprova inundação.</p></>}
+        {selected.length === 2 && <label className="compare-lock"><input type="checkbox" checked={linkedImages.linked} onChange={linkedImages.toggle} /> Sincronizar zoom e posição <span>{linkedImages.linked ? 'As duas datas acompanham o arrasto' : 'Cada data pode ser movida separadamente'}</span></label>}
+        <div className="search-comparison">{[...selected].sort((a, b) => a.acquired_at.localeCompare(b.acquired_at)).map((scene) => <SearchImage key={`${scene.product_id}-${view}-${results.bbox.join(',')}`} scene={scene} view={view} locationQuery={locationQuery} bbox={results.bbox} area={area} syncController={linkedImages.controller} />)}</div><p className="upscale-note">Amplie e anote as ruas no próprio painel; baixe o PNG só quando precisar. Quando a cartografia está disponível, o destaque de água combina a análise espectral com a referência GIS desta localização. Dados cartográficos: <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noreferrer">© OpenStreetMap contributors (ODbL)</a>. A comparação visual não comprova inundação.</p></>}
     </>}
   </section>;
 }
@@ -1801,7 +1950,7 @@ function downloadImpactCsv(items, scene, bbox) {
   document.body.appendChild(link); link.click(); link.remove();
   setTimeout(() => URL.revokeObjectURL(objectUrl), 1000);
 }
-function SearchImage({ scene, view, locationQuery, bbox, area }) {
+function SearchImage({ scene, view, locationQuery, bbox, area, syncController }) {
   const [inspection, setInspection] = useState(null);
   const [inspectionError, setInspectionError] = useState('');
   const [imageLoaded, setImageLoaded] = useState(null);
@@ -1844,7 +1993,7 @@ function SearchImage({ scene, view, locationQuery, bbox, area }) {
     {inspection?.available === false && <p className="image-error" role="status"><strong>Imagem indisponível neste recorte.</strong> {inspection.reason || 'Escolha outra passagem.'} {inspection.local_no_data_percent != null && `${inspection.local_no_data_percent}% do recorte sem dados do satélite.`} {inspection.local_obscured_percent != null && `${inspection.local_obscured_percent}% de pixels encobertos ou sem dados no recorte.`}</p>}
     {inspection?.available && <>
       {inspection.local_no_data_percent != null && <small className="image-local-quality">Neste recorte: {inspection.local_no_data_percent}% sem dados; {inspection.local_obscured_percent}% encobertos ou sem dados.</small>}
-      <ZoomableImage url={preview} alt={`Imagem Sentinel-2 de ${date(scene.acquired_at, {dateStyle:'medium'})}`} roads={roads} bbox={bbox} selectedRoads={markedIds} onToggleRoad={toggleRoad} showRoads={showRoads} onAvailability={setImageLoaded} />
+      <ZoomableImage url={preview} alt={`Imagem Sentinel-2 de ${date(scene.acquired_at, {dateStyle:'medium'})}`} roads={roads} bbox={bbox} selectedRoads={markedIds} onToggleRoad={toggleRoad} showRoads={showRoads} onAvailability={setImageLoaded} syncController={syncController} syncId={scene.product_id} focus={nearestWaterwayFocus(bbox, area?.waterways?.features)} focusLabel={area?.waterways?.features?.length ? 'Focar no rio' : 'Focar no centro'} />
       {imageLoaded === false && <p className="image-error" role="alert">A imagem foi aprovada, mas o arquivo não pôde ser aberto agora. Tente novamente.</p>}
       {imageLoaded && <DownloadLinks url={preview} name={filename} />}
       <div className="impact-register">
@@ -1881,7 +2030,7 @@ function CaseModal({ id, onClose }) {
         <h2 id="case-title">{context?.title || "Registro de evento"}</h2>
         <p>{context?.summary || `${caseData.station_name} · ${date(caseData.started_at)}`}</p>
         {caseData.mode === "SIMULACAO" && <p className="case-caution">A ocorrência foi documentada, mas as cotas deste replay são didáticas. As imagens mostram datas próximas, não o pico da enchente.</p>}
-        {caseData.source_mode === 'DCSC' && <p className="case-caution">Gatilho calculado a partir de leitura pública e referência experimental do projeto. Não é alerta oficial da Defesa Civil.</p>}
+        {caseData.source_mode === 'DCSC' && <p className="case-caution">Gatilho calculado a partir de leitura pública e cota cadastrada para esta estação ({referenceName(caseData.snapshot?.threshold_kind)}). Não é alerta oficial da Defesa Civil.</p>}
         {caseData.scenes.BASELINE?.has_natural && caseData.scenes.POST_EVENT?.has_natural && <div className="segmented" aria-label="Visualização histórica">
           <button className={view === "default" ? "active" : ""} onClick={() => setView("default")}>Água destacada</button>
           <button className={view === "natural" ? "active" : ""} onClick={() => setView("natural")}>Cor natural</button>

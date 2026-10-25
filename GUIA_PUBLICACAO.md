@@ -74,7 +74,7 @@ chmod 600 .env.production
 nano .env.production
 ```
 
-Preencha **todas** as linhas do arquivo, sem aspas:
+Preencha as linhas obrigatórias do arquivo, sem aspas. `VITE_GOOGLE_MAPS_EMBED_API_KEY` é opcional:
 
 ```dotenv
 SITE_DOMAIN=SEU_SUBDOMINIO.duckdns.org
@@ -84,16 +84,19 @@ APP_SECRET=SEGREDO_ALEATORIO_COM_PELO_MENOS_32_CARACTERES
 PDC_SUPABASE_ANON_KEY=VALOR_DO_ENV_LOCAL
 CDSE_CLIENT_ID=VALOR_DO_ENV_LOCAL
 CDSE_CLIENT_SECRET=SEGREDO_NOVO_DO_COPERNICUS
+# VITE_GOOGLE_MAPS_EMBED_API_KEY=CHAVE_RESTRITA_DO_GOOGLE
 ```
 
 `PDC_SUPABASE_ANON_KEY` e `CDSE_CLIENT_ID` estão no `.env` do seu computador. O segredo Copernicus anterior foi compartilhado na conversa: **revogue-o no portal Copernicus, gere outro e use apenas o novo**. Não publique nenhum desses valores. Gere `APP_SECRET` na VM com `openssl rand -hex 32` e copie o resultado para o arquivo. A senha `1234` não serve para publicação. Salve no nano com `Ctrl+O`, `Enter`, `Ctrl+X`.
+
+Para mostrar **Contexto Google Maps** dentro do site, crie um projeto em [Google Cloud](https://console.cloud.google.com/), habilite uma conta de faturamento, ative **Maps Embed API** e crie uma chave em **Google Maps Platform → Credentials**. Restrinja-a a **Websites** com `https://SEU_SUBDOMINIO.duckdns.org/*` e, nas restrições de API, selecione somente **Maps Embed API**. Adicione `VITE_GOOGLE_MAPS_EMBED_API_KEY=SUA_CHAVE` ao `.env.production` antes do `up -d --build`. O mapa fica em um painel separado; a imagem histórica Sentinel e seu download não são modificados. Sem essa chave, o botão abre o ponto no Google Maps em outra aba. A chave Embed é pública no navegador e precisa dessas restrições. Segundo a [tabela oficial do Google](https://developers.google.com/maps/documentation/embed/usage-and-billing), o Embed não cobra pelo uso, mas exige chave e faturamento habilitado; confirme a configuração da sua conta antes de ativá-lo.
 
 ```bash
 sudo docker compose --env-file .env.production -f compose.free.yaml up -d --build
 sudo docker compose --env-file .env.production -f compose.free.yaml ps
 ```
 
-Abra `https://SEU_SUBDOMINIO.duckdns.org`. Caddy obtém o certificado automaticamente quando DNS e portas 80/443 funcionam. A primeira compilação pode demorar alguns minutos. No painel **Admin**, entre com sua senha e ative a fonte DCSC-00043, depois de revisar o limiar experimental com a equipe.
+Abra `https://SEU_SUBDOMINIO.duckdns.org`. Caddy obtém o certificado automaticamente quando DNS e portas 80/443 funcionam. A primeira compilação pode demorar alguns minutos. No painel **Admin**, entre com sua senha, escolha DCSC-00043 e cadastre tipo, valor em centímetros, fonte documental e responsável pela cota local antes de ativar.
 
 ## 7. Operação sem o Codex
 

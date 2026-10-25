@@ -6,7 +6,7 @@ import json
 import pytest
 import tarfile
 from PIL import Image, ImageDraw
-from sqlalchemy import create_engine, select, func
+from sqlalchemy import create_engine, select, func, text, inspect
 from sqlalchemy.orm import Session
 from sqlalchemy.pool import StaticPool
 from fastapi.testclient import TestClient
@@ -18,10 +18,38 @@ from app.adapters import ANAClient, CDSEClient, ProviderError
 from app.satellite_demo import load_pair, TRIGGER, BBOX
 from app.adapters import verify_png
 import app.storage as storage
-from app.api import app
+from app.api import app, config_json
 from app.pdc import PDCClient, live_station
 from app import recent_satellite
 from app.image_export import presentation_png
+
+def test_existing_sqlite_config_keeps_data_when_reference_kind_is_added(tmp_path, monkeypatch):
+    from app import db as database
+    engine = create_engine(f'sqlite:///{tmp_path / "older.db"}')
+    with engine.begin() as connection:
+        connection.execute(text('CREATE TABLE monitoring_configs (id VARCHAR(36) PRIMARY KEY, version INTEGER)'))
+        connection.execute(text("INSERT INTO monitoring_configs (id, version) VALUES ('old-config', 1)"))
+    monkeypatch.setattr(database, 'engine', engine)
+    database.initialize()
+    with engine.begin() as connection:
+        assert 'threshold_kind' in {column['name'] for column in inspect(connection).get_columns('monitoring_configs')}
+        assert connection.execute(text("SELECT threshold_kind FROM monitoring_configs WHERE id='old-config'")).scalar_one() == 'NAO_CLASSIFICADA'
+    engine.dispose()
+
+def test_old_example_keeps_readings_without_creating_new_live_events(db):
+    from app.service import trigger_enabled
+    session, user = db
+    config = demo_config(session, user.id)
+    config.source_mode = 'DCSC'
+    config.threshold_kind = 'NAO_CLASSIFICADA'
+    config.threshold_source = 'Parâmetro experimental do projeto'
+    session.commit()
+    assert not trigger_enabled(config)
+    assert config_json(config)['trigger_enabled'] is False
+    start = now() + timedelta(seconds=1)
+    result = ingest(session, config, rows(start, [250, 310, 320]), 'AO_VIVO')
+    assert result['inserted'] == 3
+    assert result['events_created'] == []
 
 def test_presentation_upscale_preserves_original_and_has_bounded_sizes():
     source = BytesIO()
@@ -34,6 +62,28 @@ def test_presentation_upscale_preserves_original_and_has_bounded_sizes():
     assert Image.open(BytesIO(original)).size == (16, 12)
     with pytest.raises(ValueError, match='Ampliação'):
         presentation_png(original, 8)
+
+def test_upscale_smooths_natural_context_without_moving_detected_water():
+    natural = Image.new('RGBA', (3, 2), (80, 120, 40, 255))
+    natural.putpixel((2, 0), (180, 140, 65, 255))
+    highlighted = natural.copy()
+    highlighted.putpixel((0, 0), (5, 148, 242, 255))
+    natural_output, highlighted_output = BytesIO(), BytesIO()
+    natural.save(natural_output, 'PNG')
+    highlighted.save(highlighted_output, 'PNG')
+    original = highlighted_output.getvalue()
+
+    assert presentation_png(original, 1, natural_output.getvalue()) == original
+    with Image.open(BytesIO(presentation_png(original, 4, natural_output.getvalue()))) as image:
+        assert image.size == (12, 8)
+        assert sum(image.getpixel((x, y))[:3] == (5, 148, 242)
+                   for y in range(image.height) for x in range(image.width)) == 16
+        assert image.getpixel((3, 3))[:3] == (5, 148, 242)
+        assert image.getpixel((4, 0))[:3] != (5, 148, 242)
+    mismatched = BytesIO()
+    Image.new('RGBA', (2, 2), (0, 0, 0, 255)).save(mismatched, 'PNG')
+    with pytest.raises(ValueError, match='dimensões diferentes'):
+        presentation_png(original, 2, mismatched.getvalue())
 
 def test_dcsc_configuration_and_automatic_trigger(db, monkeypatch):
     session, user = db
@@ -57,7 +107,8 @@ def test_dcsc_configuration_and_automatic_trigger(db, monkeypatch):
     monkeypatch.setattr(service, 'live_station', lambda client=None: current)
     params = {'source_mode': 'DCSC', 'station_code': 'DCSC-00043',
         'river': 'Rio dos Índios', 'bbox': BBOX, 'threshold_cm': 300,
-        'threshold_source': 'Parâmetro experimental do projeto',
+        'threshold_kind': 'ALERTA',
+        'threshold_source': 'Estudo local usado no teste',
         'threshold_valid_from': instant - timedelta(days=1),
         'threshold_responsible': 'Equipe', 'collection_interval_min': 5,
         'baseline_min_days': 7, 'baseline_max_days': 30, 'post_window_days': 15}
@@ -211,7 +262,8 @@ def test_reject_invalid_area_and_unverified_live_station(db):
                                         'Operando':'1','Tipo_Estacao':'Fluviometrica'}
         def readings(self, code): return []
     params={'station_code':'83372100','river':'Rio Krauel','bbox':[-49.65,-27.07,-49.61,-27.03],
-        'threshold_cm':300,'threshold_source':'Documento oficial','threshold_responsible':'Equipe',
+        'threshold_cm':300,'threshold_kind':'ATENCAO',
+        'threshold_source':'Documento oficial','threshold_responsible':'Equipe',
         'threshold_valid_from':now(),'collection_interval_min':30,'baseline_min_days':15,
         'baseline_max_days':30,'post_window_days':15,'source_mode':'ANA'}
     with pytest.raises(ValueError,match='sem cota telemétrica válida'):

@@ -25,6 +25,14 @@ def utc(value):
 def active_config(db: Session):
     return db.scalar(select(Config).where(Config.active == True).order_by(Config.version.desc()))
 
+def trigger_enabled(config: Config) -> bool:
+    if config.source_mode == 'DEMO':
+        return True
+    if config.threshold_kind != 'NAO_CLASSIFICADA':
+        return True
+    source = config.threshold_source.casefold()
+    return not any(word in source for word in ('experimental', 'simulad', 'exemplo'))
+
 def audit(db, actor_id, action, entity_id, details=None):
     db.add(Audit(actor_id=actor_id, action=action, entity_id=entity_id, details=details or {}))
 
@@ -46,6 +54,8 @@ def has_recent_valid_level(readings):
                timedelta(0) <= now() - parsed_time(r['observed_at']) <= timedelta(days=2) for r in readings)
 
 def create_config(db, actor_id, data, ana=None):
+    if data.get('threshold_kind') not in {'ATENCAO', 'ALERTA', 'TRANSBORDAMENTO', 'EMERGENCIA', 'OUTRA'}:
+        raise ValueError('Selecione o tipo da cota de referência local')
     if data['threshold_cm'] <= 0 or not data['threshold_source'].strip() or not data['threshold_responsible'].strip():
         raise ValueError('Cota positiva, fonte e responsável são obrigatórios')
     if not (5 <= data['collection_interval_min'] <= 1440 and 0 < data['baseline_min_days'] < data['baseline_max_days'] <= 90 and 0 < data['post_window_days'] <= 30):
@@ -89,7 +99,8 @@ def create_config(db, actor_id, data, ana=None):
     config = Config(version=version, station_code=data['station_code'],
         station_name=station_name, river=data.get('river') or 'Rio dos Índios',
         station_lat=lat, station_lon=lon, bbox=data['bbox'],
-        threshold_cm=data['threshold_cm'], threshold_source=data['threshold_source'],
+        threshold_cm=data['threshold_cm'], threshold_kind=data['threshold_kind'],
+        threshold_source=data['threshold_source'],
         threshold_valid_from=parsed_time(data['threshold_valid_from']),
         threshold_responsible=data['threshold_responsible'],
         collection_interval_min=data['collection_interval_min'], baseline_min_days=data['baseline_min_days'],
@@ -109,7 +120,8 @@ def create_config(db, actor_id, data, ana=None):
                     'station_timestamp': latest.get('station_timestamp')},
                 correlation_id=str(uuid4()), mode='AO_VIVO'))
     audit(db, actor_id, 'CONFIG_ATIVADA', config.id, {'version': version, 'station': config.station_code,
-        'threshold_cm': config.threshold_cm, 'source': config.threshold_source})
+        'threshold_cm': config.threshold_cm, 'threshold_kind': config.threshold_kind,
+        'source': config.threshold_source})
     db.commit()
     return config
 
@@ -124,7 +136,7 @@ def demo_config(db, actor_id):
     version = (db.scalar(select(func.max(Config.version))) or 0) + 1
     config = Config(version=version, station_code=f'DEMO-{version}-83372100', station_name='Estação simulada · Presidente Getúlio',
         river='Rios Krauel e dos Índios', station_lat=-27.038, station_lon=-49.624,
-        bbox=DEMO_BBOX, threshold_cm=300,
+        bbox=DEMO_BBOX, threshold_cm=300, threshold_kind='SIMULACAO',
         threshold_source='Valor simulado; não é cota oficial ANA', threshold_valid_from=DEMO_TRIGGER - timedelta(days=60),
         threshold_responsible='Sistema de demonstração', collection_interval_min=30,
         baseline_min_days=7, baseline_max_days=30, post_window_days=30,
@@ -161,7 +173,9 @@ def ingest(db: Session, config: Config, readings: list[dict], mode='AO_VIVO', co
         db.add(reading)
         db.flush()
         count += 1
-        if reading.quality_status != 'VALIDA' or reading.water_level_cm is None or observed < utc(config.threshold_valid_from):
+        if (reading.quality_status != 'VALIDA' or reading.water_level_cm is None
+                or observed < utc(config.threshold_valid_from)
+                or (mode == 'AO_VIVO' and not trigger_enabled(config))):
             continue
         open_event = db.scalar(select(Event).where(Event.config_id == config.id, Event.mode == mode,
             Event.ended_at.is_(None), Event.started_at <= observed).order_by(Event.started_at.desc()).limit(1))
@@ -188,6 +202,7 @@ def ingest(db: Session, config: Config, readings: list[dict], mode='AO_VIVO', co
                 status='AGUARDANDO_IMAGEM', snapshot={
                     'station_code': config.station_code, 'station_name': config.station_name,
                     'river': config.river, 'bbox': config.bbox, 'threshold_cm': config.threshold_cm,
+                    'threshold_kind': config.threshold_kind,
                     'threshold_source': config.threshold_source, 'config_version': config.version,
                     'source_mode': config.source_mode})
             db.add(event)

@@ -12,7 +12,7 @@ from sqlalchemy.orm import Session
 from .db import initialize, session
 from .models import User, Config, Reading, Event, Job, Scene, Attempt, Audit, now
 from .security import hash_password, verify_password, sign, current_admin
-from .service import active_config, create_config, demo_config, demo_replay, ingest, reprocess, displayed_scenes, enqueue_collection, has_recent_valid_level, PUBLIC, utc, work_once
+from .service import active_config, create_config, demo_config, demo_replay, ingest, reprocess, displayed_scenes, enqueue_collection, has_recent_valid_level, trigger_enabled, PUBLIC, utc, work_once
 from .adapters import ANAClient, CDSEClient, ProviderError, parsed_time
 from .storage import get
 from .station_reference import OFFICIAL_STATION
@@ -22,10 +22,19 @@ from .gis_area import area_geojson
 from .satellite_demo import load_pair, HISTORICAL_CONTEXT
 from .image_export import presentation_png
 
-def exported_png(blob: bytes, scale: int) -> bytes:
+def exported_png(blob: bytes, scale: int, natural_blob: bytes | None = None) -> bytes:
     if scale not in (1, 2, 4):
         raise HTTPException(422, 'Ampliação deve ser 1×, 2× ou 4×')
-    return presentation_png(blob, scale)
+    return presentation_png(blob, scale, natural_blob)
+
+def natural_for_upscale(images: dict, view: str, scale: int) -> bytes | None:
+    if view != 'default' or scale == 1:
+        return None
+    record = images['natural']
+    blob = get(record['key'])
+    if hashlib.sha256(blob).hexdigest() != record['sha256']:
+        raise HTTPException(503, 'Arquivo em cor natural corrompido')
+    return blob
 
 @asynccontextmanager
 async def lifespan(app):
@@ -69,6 +78,7 @@ class ConfigIn(BaseModel):
     river: str = 'Rio Krauel'
     bbox: list[float] = Field(min_length=4, max_length=4)
     threshold_cm: float = Field(gt=0)
+    threshold_kind: Literal['ATENCAO', 'ALERTA', 'TRANSBORDAMENTO', 'EMERGENCIA', 'OUTRA']
     threshold_source: str = Field(min_length=5)
     threshold_valid_from: datetime
     threshold_responsible: str = Field(min_length=2)
@@ -90,10 +100,12 @@ def config_json(c):
     return {'id': c.id, 'version': c.version, 'station_code': c.station_code,
         'station_name': c.station_name, 'river': c.river, 'station_lat': c.station_lat,
         'station_lon': c.station_lon, 'bbox': c.bbox, 'threshold_cm': c.threshold_cm,
+        'threshold_kind': c.threshold_kind,
         'threshold_source': c.threshold_source, 'threshold_valid_from': iso(c.threshold_valid_from),
         'threshold_responsible': c.threshold_responsible, 'collection_interval_min': c.collection_interval_min,
         'baseline_min_days': c.baseline_min_days, 'baseline_max_days': c.baseline_max_days,
         'post_window_days': c.post_window_days, 'source_mode': c.source_mode,
+        'trigger_enabled': trigger_enabled(c),
         'active': c.active, 'valid_from': iso(c.valid_from), 'valid_to': iso(c.valid_to)}
 
 def reading_json(r):
@@ -268,7 +280,8 @@ def satellite_search_preview(product_id: str, view: Literal['default', 'natural'
         blob = get(record['key'])
         if hashlib.sha256(blob).hexdigest() != record['sha256']:
             raise HTTPException(503, 'Arquivo corrompido')
-        return Response(exported_png(blob, scale), media_type='image/png',
+        return Response(exported_png(blob, scale,
+            natural_for_upscale(preview['images'], view, scale)), media_type='image/png',
             headers={'Cache-Control': 'public, max-age=86400'})
     except ProviderError as exc:
         raise HTTPException(503, str(exc)) from exc
@@ -283,7 +296,8 @@ def latest_satellite_image(index: int, view: Literal['default', 'natural'] = 'de
     image = get(record['key'])
     if hashlib.sha256(image).hexdigest() != record['sha256']:
         raise HTTPException(503, 'Checksum da imagem divergente')
-    return Response(exported_png(image, scale), media_type='image/png',
+    return Response(exported_png(image, scale,
+        natural_for_upscale(manifest['scenes'][index]['images'], view, scale)), media_type='image/png',
         headers={'Cache-Control': 'public, max-age=300'})
 
 @app.get('/api/satellite/latest/rejected')
