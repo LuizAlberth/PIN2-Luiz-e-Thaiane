@@ -1,0 +1,54 @@
+services:
+  - type: web
+    name: pin2-api
+    runtime: python
+    rootDir: backend
+    plan: starter
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn app.api:app --host 0.0.0.0 --port $PORT
+    envVars:
+      - key: ADMIN_EMAIL
+        sync: false
+      - key: ADMIN_PASSWORD
+        sync: false
+      - key: APP_SECRET
+        sync: false
+      - key: DATABASE_URL
+        sync: false
+      - key: PDC_SUPABASE_ANON_KEY
+        sync: false
+      - key: CDSE_CLIENT_ID
+        sync: false
+      - key: CDSE_CLIENT_SECRET
+        sync: false
+      - key: ANA_IDENTIFICADOR
+        value: ""
+      - key: ANA_SENHA
+        value: ""
+      - key: S3_ACCESS_KEY
+        sync: false
+      - key: S3_SECRET_KEY
+        sync: false
+      - key: S3_ENDPOINT
+        value: ""
+      - key: S3_BUCKET
+        value: pin2-scenes
+      - key: LOCAL_STORAGE
+        value: ./storage
+      - key: FRONTEND_ORIGIN
+        sync: false
+      - key: PUBLIC_DEPLOYMENT
+        value: "1"
+
+  - type: web
+    name: pin2-frontend
+    runtime: node
+    rootDir: frontend
+    plan: starter
+    buildCommand: npm install && npm run build
+    startCommand: npm run preview -- --host 0.0.0.0 --port $PORT
+    envVars:
+      - key: API_PROXY_TARGET
+        sync: false
+      - key: VITE_GOOGLE_MAPS_EMBED_API_KEY
+        sync: false
